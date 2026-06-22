@@ -44,6 +44,9 @@ var (
 
 	// ResponsesPath is the OpenAI Responses API path
 	ResponsesPath = "/v1/responses"
+
+	// ImagesGenerationsPath is the OpenAI-compatible image generation path
+	ImagesGenerationsPath = "/v1/images/generations"
 )
 
 func openAIAPIAttr(apiType APIType) attribute.KeyValue {
