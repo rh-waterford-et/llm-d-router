@@ -44,6 +44,9 @@ var (
 
 	// ResponsesPath is the OpenAI Responses API path
 	ResponsesPath = "/v1/responses"
+
+	// InferencePath is the custom inference endpoint with routing hints
+	InferencePath = "/v1/inference"
 )
 
 func openAIAPIAttr(apiType APIType) attribute.KeyValue {
