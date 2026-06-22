@@ -50,6 +50,9 @@ var (
 
 	// AudioTranscriptionsPath is the OpenAI-compatible speech-to-text path
 	AudioTranscriptionsPath = "/v1/audio/transcriptions"
+
+	// ImagesGenerationsPath is the OpenAI-compatible image generation path
+	ImagesGenerationsPath = "/v1/images/generations"
 )
 
 func openAIAPIAttr(apiType APIType) attribute.KeyValue {
