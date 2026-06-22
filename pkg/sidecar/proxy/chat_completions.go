@@ -53,6 +53,9 @@ var (
 
 	// ImagesGenerationsPath is the OpenAI-compatible image generation path
 	ImagesGenerationsPath = "/v1/images/generations"
+
+	// InferencePath is the custom inference endpoint with routing hints
+	InferencePath = "/v1/inference"
 )
 
 func openAIAPIAttr(apiType APIType) attribute.KeyValue {
