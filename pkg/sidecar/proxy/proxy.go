@@ -94,6 +94,8 @@ const (
 	APITypeChatCompletions APIType = iota
 	// APITypeResponses is the Responses API (/v1/responses)
 	APITypeResponses
+	// APITypeAudioTranscriptions is the Audio Transcriptions API (/v1/audio/transcriptions)
+	APITypeAudioTranscriptions
 )
 
 // String implements fmt.Stringer so structured logs show readable API names.
@@ -103,6 +105,8 @@ func (a APIType) String() string {
 		return "chat_completions"
 	case APITypeResponses:
 		return "responses"
+	case APITypeAudioTranscriptions:
+		return "audio_transcriptions"
 	default:
 		return fmt.Sprintf("APIType(%d)", int(a))
 	}
@@ -399,6 +403,7 @@ func (s *Server) createRoutes() *http.ServeMux {
 	mux.HandleFunc("POST "+ChatCompletionsPath, s.disaggregatedPrefillHandler(APITypeChatCompletions))
 	mux.HandleFunc("POST "+CompletionsPath, s.disaggregatedPrefillHandler(APITypeChatCompletions))
 	mux.HandleFunc("POST "+ResponsesPath, s.disaggregatedPrefillHandler(APITypeResponses))
+	mux.HandleFunc("POST "+AudioTranscriptionsPath, s.disaggregatedPrefillHandler(APITypeAudioTranscriptions))
 
 	s.decoderProxy = s.createDecoderProxyHandler(s.config.DecoderURL, s.config.InsecureSkipVerifyForDecoder)
 
