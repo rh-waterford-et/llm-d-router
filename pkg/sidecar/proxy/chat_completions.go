@@ -44,6 +44,9 @@ var (
 
 	// ResponsesPath is the OpenAI Responses API path
 	ResponsesPath = "/v1/responses"
+
+	// AudioTranscriptionsPath is the OpenAI-compatible speech-to-text path
+	AudioTranscriptionsPath = "/v1/audio/transcriptions"
 )
 
 func openAIAPIAttr(apiType APIType) attribute.KeyValue {
