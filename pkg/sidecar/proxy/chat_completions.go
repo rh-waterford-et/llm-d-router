@@ -47,6 +47,9 @@ var (
 
 	// AudioSpeechPath is the OpenAI-compatible text-to-speech path
 	AudioSpeechPath = "/v1/audio/speech"
+
+	// AudioTranscriptionsPath is the OpenAI-compatible speech-to-text path
+	AudioTranscriptionsPath = "/v1/audio/transcriptions"
 )
 
 func openAIAPIAttr(apiType APIType) attribute.KeyValue {
