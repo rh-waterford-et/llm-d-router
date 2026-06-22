@@ -88,6 +88,7 @@ import (
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/parsers/vertexai"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/parsers/vllmgrpc"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/filter/bylabel"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/filter/modality"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/filter/prefixcacheaffinity"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/filter/sloheadroomtier"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/picker/maxscore"
@@ -109,6 +110,7 @@ import (
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/runningrequests"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/sessionaffinity"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/tokenload"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/tts"
 	testfilter "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/test/filter"
 	"github.com/llm-d/llm-d-router/pkg/epp/handlers"
 	"github.com/llm-d/llm-d-router/pkg/epp/metrics"
@@ -517,6 +519,10 @@ func (r *Runner) registerInTreePlugins() {
 	fwkplugin.Register(nohitlru.NoHitLRUType, nohitlru.Factory)
 	fwkplugin.Register(activerequest.ActiveRequestType, activerequest.Factory)
 	fwkplugin.Register(preciseprefixcache.PrecisePrefixCachePluginType, preciseprefixcache.PluginFactory)
+
+	// Multimodal plugins
+	fwkplugin.Register(modality.ModalityFilterType, modality.ModalityFilterFactory)
+	fwkplugin.Register(tts.TTSScorerType, tts.TTSScorerFactory)
 
 	// Flow Control plugins
 	fwkplugin.Register(globalstrict.GlobalStrictFairnessPolicyType, globalstrict.GlobalStrictFairnessPolicyFactory)
