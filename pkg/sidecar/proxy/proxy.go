@@ -98,6 +98,8 @@ const (
 	APITypeAudioSpeech
 	// APITypeAudioTranscriptions is the Audio Transcriptions API (/v1/audio/transcriptions)
 	APITypeAudioTranscriptions
+	// APITypeImagesGenerations is the Images Generations API (/v1/images/generations)
+	APITypeImagesGenerations
 )
 
 // String implements fmt.Stringer so structured logs show readable API names.
@@ -111,6 +113,8 @@ func (a APIType) String() string {
 		return "audio_speech"
 	case APITypeAudioTranscriptions:
 		return "audio_transcriptions"
+	case APITypeImagesGenerations:
+		return "images_generations"
 	default:
 		return fmt.Sprintf("APIType(%d)", int(a))
 	}
@@ -409,6 +413,7 @@ func (s *Server) createRoutes() *http.ServeMux {
 	mux.HandleFunc("POST "+ResponsesPath, s.disaggregatedPrefillHandler(APITypeResponses))
 	mux.HandleFunc("POST "+AudioSpeechPath, s.disaggregatedPrefillHandler(APITypeAudioSpeech))
 	mux.HandleFunc("POST "+AudioTranscriptionsPath, s.disaggregatedPrefillHandler(APITypeAudioTranscriptions))
+	mux.HandleFunc("POST "+ImagesGenerationsPath, s.disaggregatedPrefillHandler(APITypeImagesGenerations))
 
 	s.decoderProxy = s.createDecoderProxyHandler(s.config.DecoderURL, s.config.InsecureSkipVerifyForDecoder)
 
