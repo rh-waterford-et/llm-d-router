@@ -414,6 +414,7 @@ func (s *Server) createRoutes() *http.ServeMux {
 	mux.HandleFunc("POST "+AudioSpeechPath, s.disaggregatedPrefillHandler(APITypeAudioSpeech))
 	mux.HandleFunc("POST "+AudioTranscriptionsPath, s.disaggregatedPrefillHandler(APITypeAudioTranscriptions))
 	mux.HandleFunc("POST "+ImagesGenerationsPath, s.disaggregatedPrefillHandler(APITypeImagesGenerations))
+	mux.HandleFunc("POST "+InferencePath, s.inferenceHandler)
 
 	s.decoderProxy = s.createDecoderProxyHandler(s.config.DecoderURL, s.config.InsecureSkipVerifyForDecoder)
 
