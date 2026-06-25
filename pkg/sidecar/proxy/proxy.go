@@ -33,6 +33,8 @@ import (
 	lru "github.com/hashicorp/golang-lru/v2"
 	"golang.org/x/sync/errgroup"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+
+	"github.com/llm-d/llm-d-router/pkg/common"
 )
 
 const (
@@ -408,13 +410,13 @@ func (s *Server) createRoutes() *http.ServeMux {
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	mux.HandleFunc("POST "+ChatCompletionsPath, s.disaggregatedPrefillHandler(APITypeChatCompletions))
-	mux.HandleFunc("POST "+CompletionsPath, s.disaggregatedPrefillHandler(APITypeChatCompletions))
-	mux.HandleFunc("POST "+ResponsesPath, s.disaggregatedPrefillHandler(APITypeResponses))
-	mux.HandleFunc("POST "+AudioSpeechPath, s.disaggregatedPrefillHandler(APITypeAudioSpeech))
-	mux.HandleFunc("POST "+AudioTranscriptionsPath, s.disaggregatedPrefillHandler(APITypeAudioTranscriptions))
-	mux.HandleFunc("POST "+ImagesGenerationsPath, s.disaggregatedPrefillHandler(APITypeImagesGenerations))
-	mux.HandleFunc("POST "+InferencePath, s.inferenceHandler)
+	mux.HandleFunc("POST "+common.ChatCompletionsPath, s.disaggregatedPrefillHandler(APITypeChatCompletions))
+	mux.HandleFunc("POST "+common.CompletionsPath, s.disaggregatedPrefillHandler(APITypeChatCompletions))
+	mux.HandleFunc("POST "+common.ResponsesPath, s.disaggregatedPrefillHandler(APITypeResponses))
+	mux.HandleFunc("POST "+common.AudioSpeechPath, s.disaggregatedPrefillHandler(APITypeAudioSpeech))
+	mux.HandleFunc("POST "+common.AudioTranscriptionsPath, s.disaggregatedPrefillHandler(APITypeAudioTranscriptions))
+	mux.HandleFunc("POST "+common.ImagesGenerationsPath, s.disaggregatedPrefillHandler(APITypeImagesGenerations))
+	mux.HandleFunc("POST "+common.InferencePath, s.inferenceHandler)
 
 	s.decoderProxy = s.createDecoderProxyHandler(s.config.DecoderURL, s.config.InsecureSkipVerifyForDecoder)
 
