@@ -1,0 +1,93 @@
+# EPP Deployment with RBAC
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: food-review-endpoint-picker
+  namespace: default
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: food-review-endpoint-picker
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["inference.networking.k8s.io"]
+  resources: ["inferencepools"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["inference.networking.x-k8s.io"]
+  resources: ["inferenceobjectives"]
+  verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: food-review-endpoint-picker
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: food-review-endpoint-picker
+subjects:
+- kind: ServiceAccount
+  name: food-review-endpoint-picker
+  namespace: default
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: food-review-endpoint-picker
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: food-review-endpoint-picker
+  template:
+    metadata:
+      labels:
+        app: food-review-endpoint-picker
+    spec:
+      serviceAccountName: food-review-endpoint-picker
+      containers:
+      - name: epp
+        image: ghcr.io/llm-d/llm-d-inference-scheduler:dev
+        imagePullPolicy: IfNotPresent
+        args:
+        - --pool-name=food-review-inference-pool
+        - --pool-namespace=default
+        - --v=10
+        - --config-file=/etc/epp/epp-config.yaml
+        - --secure-serving=false
+        - --health-checking=true
+        ports:
+        - containerPort: 5557
+          name: zmq
+        - containerPort: 9002
+          name: grpc
+        volumeMounts:
+        - name: epp-config
+          mountPath: /etc/epp
+      volumes:
+      - name: epp-config
+        configMap:
+          name: epp-config
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: food-review-endpoint-picker
+  namespace: default
+spec:
+  selector:
+    app: food-review-endpoint-picker
+  ports:
+  - port: 5557
+    name: zmq
+  - port: 9002
+    name: grpc
