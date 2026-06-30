@@ -33,11 +33,15 @@ import (
 const (
 	OpenAIParserType = "openai-parser"
 
-	conversationsAPI   = "conversations"
-	responsesAPI       = "responses"
-	chatCompletionsAPI = "chat/completions"
-	completionsAPI     = "completions"
-	embeddingsAPI      = "embeddings"
+	conversationsAPI          = "conversations"
+	responsesAPI              = "responses"
+	chatCompletionsAPI        = "chat/completions"
+	completionsAPI            = "completions"
+	embeddingsAPI             = "embeddings"
+	audioSpeechAPI            = "audio/speech"
+	audioTranscriptionsAPI    = "audio/transcriptions"
+	imagesGenerationsAPI      = "images/generations"
+	inferenceAPI              = "inference"
 
 	streamingRespPrefix = "data: "
 	streamingEndMsg     = "data: [DONE]"
@@ -184,6 +188,18 @@ func determineAPITypeFromPath(path string) string {
 	if strings.HasSuffix(path, "/embeddings") {
 		return embeddingsAPI
 	}
+	if strings.HasSuffix(path, "/audio/speech") {
+		return audioSpeechAPI
+	}
+	if strings.HasSuffix(path, "/audio/transcriptions") {
+		return audioTranscriptionsAPI
+	}
+	if strings.HasSuffix(path, "/images/generations") {
+		return imagesGenerationsAPI
+	}
+	if strings.HasSuffix(path, "/inference") {
+		return inferenceAPI
+	}
 
 	// Default to completions API for backward compatibility with existing clients and integration tests
 	return completionsAPI
@@ -232,6 +248,12 @@ func extractRequestBody(rawBody []byte, headers map[string]string) (*fwkrh.Infer
 			return &fwkrh.InferenceRequestBody{Embeddings: &embeddings}, nil
 		}
 		return nil, errors.New("invalid embeddings request: must have input field")
+
+	case audioSpeechAPI, audioTranscriptionsAPI, imagesGenerationsAPI, inferenceAPI:
+		// Multimodal endpoints: pass through without strict validation
+		// The routing sidecar will handle these requests
+		return &fwkrh.InferenceRequestBody{}, nil
+
 	default:
 		return nil, errors.New("unsupported API endpoint")
 	}
