@@ -1,0 +1,155 @@
+# Envoy Gateway with ext-proc filter for EPP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inference-gateway
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: inference-gateway
+  template:
+    metadata:
+      labels:
+        app: inference-gateway
+    spec:
+      containers:
+      - name: envoy
+        image: docker.io/envoyproxy/envoy:distroless-v1.33.2
+        ports:
+        - containerPort: 8000
+          name: http
+        - containerPort: 9901
+          name: admin
+        volumeMounts:
+        - name: envoy-config
+          mountPath: /etc/envoy
+        command: ["/usr/local/bin/envoy"]
+        args:
+        - --config-path
+        - /etc/envoy/envoy-config.yaml
+        - --log-level
+        - info
+      volumes:
+      - name: envoy-config
+        configMap:
+          name: envoy-config
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: inference-gateway
+  namespace: default
+spec:
+  selector:
+    app: inference-gateway
+  ports:
+  - port: 80
+    targetPort: 8000
+    protocol: TCP
+    name: http
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: envoy-config
+  namespace: default
+data:
+  envoy-config.yaml: |
+    admin:
+      address:
+        socket_address:
+          address: 0.0.0.0
+          port_value: 9901
+
+    static_resources:
+      listeners:
+      - name: main_listener
+        address:
+          socket_address:
+            address: 0.0.0.0
+            port_value: 8000
+        filter_chains:
+        - filters:
+          - name: envoy.filters.network.http_connection_manager
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+              stat_prefix: ingress_http
+              codec_type: AUTO
+              route_config:
+                name: local_route
+                virtual_hosts:
+                - name: backend
+                  domains: ["*"]
+                  routes:
+                  - match:
+                      prefix: "/"
+                    route:
+                      cluster: backend_cluster
+                      timeout: 30s
+              http_filters:
+              - name: envoy.filters.http.ext_proc
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor
+                  grpc_service:
+                    envoy_grpc:
+                      cluster_name: epp_cluster
+                      authority: food-review-endpoint-picker.default.svc.cluster.local:9002
+                    timeout: 10s
+                  processing_mode:
+                    request_header_mode: SEND
+                    response_header_mode: SEND
+                    request_body_mode: FULL_DUPLEX_STREAMED
+                    response_body_mode: FULL_DUPLEX_STREAMED
+                    request_trailer_mode: SEND
+                    response_trailer_mode: SEND
+                  message_timeout: 1000s
+                  mutation_rules:
+                    allow_all_routing: true
+                    allow_envoy: true
+              - name: envoy.filters.http.router
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+      clusters:
+      - name: epp_cluster
+        type: STRICT_DNS
+        connect_timeout: 10s
+        lb_policy: LEAST_REQUEST
+        health_checks:
+        - timeout: 2s
+          interval: 10s
+          unhealthy_threshold: 3
+          healthy_threshold: 2
+          grpc_health_check:
+            service_name: "envoy.service.ext_proc.v3.ExternalProcessor"
+        typed_extension_protocol_options:
+          envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+            "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+            explicit_http_config:
+              http2_protocol_options:
+                initial_stream_window_size: 65536
+                initial_connection_window_size: 1048576
+        load_assignment:
+          cluster_name: epp_cluster
+          endpoints:
+          - lb_endpoints:
+            - endpoint:
+                address:
+                  socket_address:
+                    address: food-review-endpoint-picker.default.svc.cluster.local
+                    port_value: 9002
+
+      # Backend cluster uses ORIGINAL_DST to route to IP:port from x-gateway-destination-endpoint header
+      - name: backend_cluster
+        type: ORIGINAL_DST
+        connect_timeout: 30s
+        lb_policy: CLUSTER_PROVIDED
+        original_dst_lb_config:
+          use_http_header: true
+          http_header_name: x-gateway-destination-endpoint
