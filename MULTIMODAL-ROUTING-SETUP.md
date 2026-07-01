@@ -4,6 +4,8 @@ Complete setup for testing multimodal endpoint routing (TTS, STT, image generati
 
 **PR:** [#5 - Test routing to multimodal endpoints](https://github.com/rh-waterford-et/llm-d-router/pull/5)
 
+**PR:** [#6 - Update Kind Deployment](https://github.com/rh-waterford-et/llm-d-router/pull/6)
+
 ## Code Changes
 
 ### Files Modified
@@ -33,9 +35,15 @@ Complete setup for testing multimodal endpoint routing (TTS, STT, image generati
 
 ### Prerequisites
 ```bash
+# Install Kind:
+ 
+https://kind.sigs.k8s.io/docs/user/quick-start/installation
+```
+
+```bash
 # Build images
-make docker-build-epp
-make docker-build-sidecar
+make podman-build-epp
+make podman-build-sidecar
 ```
 
 ### Quick Start (Automated)
