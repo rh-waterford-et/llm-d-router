@@ -44,12 +44,12 @@ const (
 // UtilizationDetectorFactory instantiates the detector plugin using the provided JSON parameters.
 func UtilizationDetectorFactory(
 	name string,
-	params json.RawMessage,
+	params *json.Decoder,
 	handle fwkplugin.Handle,
 ) (fwkplugin.Plugin, error) {
 	var apiCfg apiConfig
-	if len(params) > 0 {
-		if err := json.Unmarshal(params, &apiCfg); err != nil {
+	if params != nil {
+		if err := params.Decode(&apiCfg); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal utilization detector config: %w", err)
 		}
 	}
@@ -141,7 +141,6 @@ func (d *Detector) Saturation(_ context.Context, candidates []datalayer.Endpoint
 // It applies a relaxed limit (Threshold * (1 + Headroom)) to allow for scheduling flexibility and burst tolerance.
 func (d *Detector) Filter(
 	_ context.Context,
-	_ *fwksched.CycleState,
 	_ *fwksched.InferenceRequest,
 	endpoints []fwksched.Endpoint,
 ) []fwksched.Endpoint {

@@ -45,10 +45,10 @@ type ttsScorerParameters struct {
 var _ fwksched.Scorer = &TTSScorer{}
 
 // TTSScorerFactory defines the factory function for the TTSScorer.
-func TTSScorerFactory(name string, rawParameters json.RawMessage, handle fwkplugin.Handle) (fwkplugin.Plugin, error) {
+func TTSScorerFactory(name string, params *json.Decoder, handle fwkplugin.Handle) (fwkplugin.Plugin, error) {
 	parameters := ttsScorerParameters{QueueThreshold: TTSQueueThresholdDefault}
-	if rawParameters != nil {
-		if err := json.Unmarshal(rawParameters, &parameters); err != nil {
+	if params != nil {
+		if err := params.Decode(&parameters); err != nil {
 			return nil, fmt.Errorf("failed to parse the parameters of the '%s' scorer - %w", TTSScorerType, err)
 		}
 	}
@@ -105,7 +105,7 @@ func (s *TTSScorer) Consumes() map[string]any {
 // get higher scores since TTS is latency-sensitive and dominated by the decode
 // phase. The scoring formula weights queue depth heavily (70%) with a
 // secondary consideration for GPU memory utilisation (30%).
-func (s *TTSScorer) Score(_ context.Context, _ *fwksched.CycleState, _ *fwksched.InferenceRequest, endpoints []fwksched.Endpoint) map[fwksched.Endpoint]float64 {
+func (s *TTSScorer) Score(_ context.Context, _ *fwksched.InferenceRequest, endpoints []fwksched.Endpoint) map[fwksched.Endpoint]float64 {
 	scores := make(map[fwksched.Endpoint]float64, len(endpoints))
 
 	for _, ep := range endpoints {

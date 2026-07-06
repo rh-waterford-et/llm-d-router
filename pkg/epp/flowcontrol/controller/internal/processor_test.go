@@ -34,7 +34,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	"github.com/llm-d/llm-d-router/pkg/epp/backend/metrics"
 	"github.com/llm-d/llm-d-router/pkg/epp/flowcontrol/contracts"
 	"github.com/llm-d/llm-d-router/pkg/epp/flowcontrol/contracts/mocks"
 	"github.com/llm-d/llm-d-router/pkg/epp/flowcontrol/types"
@@ -75,7 +74,7 @@ func (m *mockSaturationDetector) Saturation(ctx context.Context, candidatePods [
 // and provides helper methods for setting up tests and managing the processor's lifecycle.
 type testHarness struct {
 	t *testing.T
-	*mocks.MockRegistryShard
+	*mocks.MockRegistryDataPlane
 
 	// Concurrency and Lifecycle
 	ctx         context.Context
@@ -84,7 +83,7 @@ type testHarness struct {
 	startSignal chan struct{}
 
 	// Core components under test
-	processor          *ShardProcessor
+	processor          *Processor
 	clock              *testclock.FakeClock
 	logger             logr.Logger
 	saturationDetector *mockSaturationDetector
@@ -104,15 +103,15 @@ type testHarness struct {
 func newTestHarness(t *testing.T, expiryCleanupInterval time.Duration) *testHarness {
 	t.Helper()
 	h := &testHarness{
-		t:                  t,
-		MockRegistryShard:  &mocks.MockRegistryShard{},
-		clock:              testclock.NewFakeClock(time.Now()),
-		logger:             logr.Discard(),
-		saturationDetector: &mockSaturationDetector{},
-		endpointCandidates: &mocks.MockEndpointCandidates{Candidates: []fwkdl.Endpoint{&metrics.FakePodMetrics{}}},
-		startSignal:        make(chan struct{}),
-		queues:             make(map[flowcontrol.FlowKey]*mocks.MockManagedQueue),
-		priorityFlows:      make(map[int][]flowcontrol.FlowKey),
+		t:                     t,
+		MockRegistryDataPlane: &mocks.MockRegistryDataPlane{},
+		clock:                 testclock.NewFakeClock(time.Now()),
+		logger:                logr.Discard(),
+		saturationDetector:    &mockSaturationDetector{},
+		endpointCandidates:    &mocks.MockEndpointCandidates{Candidates: []fwkdl.Endpoint{fwkdl.NewEndpoint(nil, nil)}},
+		startSignal:           make(chan struct{}),
+		queues:                make(map[flowcontrol.FlowKey]*mocks.MockManagedQueue),
+		priorityFlows:         make(map[int][]flowcontrol.FlowKey),
 	}
 	h.ctx, h.cancel = context.WithCancel(context.Background())
 
@@ -123,8 +122,8 @@ func newTestHarness(t *testing.T, expiryCleanupInterval time.Duration) *testHarn
 	h.FairnessPolicyFunc = h.fairnessPolicy
 
 	// Provide a default stats implementation that is effectively infinite.
-	h.StatsFunc = func() *contracts.ShardStats {
-		return &contracts.ShardStats{
+	h.StatsFunc = func() contracts.AggregateStats {
+		return contracts.AggregateStats{
 			TotalCapacityBytes: 1e9,
 			PerPriorityBandStats: map[int]contracts.PriorityBandStats{
 				testFlow.Priority: {CapacityBytes: 1e9},
@@ -132,10 +131,11 @@ func newTestHarness(t *testing.T, expiryCleanupInterval time.Duration) *testHarn
 		}
 	}
 
-	h.processor = NewShardProcessor(
+	h.processor = NewProcessor(
 		h.ctx,
 		"test-pool",
 		h,
+		nil,
 		h.saturationDetector,
 		h.endpointCandidates,
 		usagelimits.DefaultPolicy(),
@@ -321,8 +321,8 @@ func TestShardProcessor(t *testing.T) {
 			h := newTestHarness(t, testCleanupTick)
 			item := h.newTestItem("req-capacity-reject", testFlow, testTTL)
 			h.addQueue(testFlow)
-			h.StatsFunc = func() *contracts.ShardStats {
-				return &contracts.ShardStats{PerPriorityBandStats: map[int]contracts.PriorityBandStats{
+			h.StatsFunc = func() contracts.AggregateStats {
+				return contracts.AggregateStats{PerPriorityBandStats: map[int]contracts.PriorityBandStats{
 					testFlow.Priority: {CapacityBytes: 50}, // 50 is less than item size of 100
 				}}
 			}
@@ -615,6 +615,48 @@ func TestShardProcessor(t *testing.T) {
 					},
 				},
 				{
+					name: "should reject item as no-endpoints when at capacity with an empty pool",
+					setupHarness: func(h *testHarness) {
+						h.addQueue(testFlow)
+						// Pool scaled to zero: the queue acts as a scale-from-zero waiting room.
+						h.endpointCandidates.Candidates = nil
+						// Prime poolEmpty via a dispatch cycle, mirroring the Run loop's periodic dispatch.
+						h.processor.dispatchCycle(context.Background())
+						h.StatsFunc = func() contracts.AggregateStats {
+							return contracts.AggregateStats{PerPriorityBandStats: map[int]contracts.PriorityBandStats{
+								testFlow.Priority: {CapacityBytes: 50}, // 50 is less than item size of 100
+							}}
+						}
+					},
+					assert: func(t *testing.T, h *testHarness, item *FlowItem) {
+						assert.Equal(t, types.QueueOutcomeRejectedNoEndpoints, item.FinalState().Outcome,
+							"Outcome should be RejectedNoEndpoints when the pool is empty")
+						require.Error(t, item.FinalState().Err, "A no-endpoints rejection should produce an error")
+						assert.ErrorIs(t, item.FinalState().Err, types.ErrNoEndpoints, "The error should wrap ErrNoEndpoints")
+						assert.ErrorIs(t, item.FinalState().Err, types.ErrRejected, "The error should wrap ErrRejected")
+					},
+				},
+				{
+					name: "should reject item as capacity when at capacity with a non-empty pool",
+					setupHarness: func(h *testHarness) {
+						h.addQueue(testFlow)
+						// Non-empty pool (harness default): a capacity rejection is backpressure, not unavailability.
+						h.processor.dispatchCycle(context.Background())
+						h.StatsFunc = func() contracts.AggregateStats {
+							return contracts.AggregateStats{PerPriorityBandStats: map[int]contracts.PriorityBandStats{
+								testFlow.Priority: {CapacityBytes: 50}, // 50 is less than item size of 100
+							}}
+						}
+					},
+					assert: func(t *testing.T, h *testHarness, item *FlowItem) {
+						assert.Equal(t, types.QueueOutcomeRejectedCapacity, item.FinalState().Outcome,
+							"Outcome should be RejectedCapacity when the pool is non-empty")
+						require.Error(t, item.FinalState().Err, "A capacity rejection should produce an error")
+						assert.ErrorIs(t, item.FinalState().Err, types.ErrQueueAtCapacity,
+							"The error should wrap ErrQueueAtCapacity")
+					},
+				},
+				{
 					name: "should ignore an already-finalized item",
 					setupHarness: func(h *testHarness) {
 						mockQueue := h.addQueue(testFlow)
@@ -662,19 +704,19 @@ func TestShardProcessor(t *testing.T) {
 			testCases := []struct {
 				name         string
 				itemByteSize uint64
-				stats        contracts.ShardStats
+				stats        contracts.AggregateStats
 				expectHasCap bool
 			}{
 				{
 					name:         "should deny item if shard byte capacity exceeded",
 					itemByteSize: 1,
-					stats:        contracts.ShardStats{TotalByteSize: 100, TotalCapacityBytes: 100},
+					stats:        contracts.AggregateStats{TotalByteSize: 100, TotalCapacityBytes: 100},
 					expectHasCap: false,
 				},
 				{
 					name:         "should deny item if shard request capacity exceeded",
 					itemByteSize: 0,
-					stats: contracts.ShardStats{
+					stats: contracts.AggregateStats{
 						TotalCapacityRequests: 10, TotalLen: 10,
 						PerPriorityBandStats: map[int]contracts.PriorityBandStats{
 							testFlow.Priority: {CapacityRequests: 100, Len: 0},
@@ -685,7 +727,7 @@ func TestShardProcessor(t *testing.T) {
 				{
 					name:         "should deny item if band byte capacity exceeded",
 					itemByteSize: 1,
-					stats: contracts.ShardStats{
+					stats: contracts.AggregateStats{
 						TotalCapacityBytes: 200, TotalByteSize: 100,
 						PerPriorityBandStats: map[int]contracts.PriorityBandStats{
 							testFlow.Priority: {ByteSize: 50, CapacityBytes: 50},
@@ -696,7 +738,7 @@ func TestShardProcessor(t *testing.T) {
 				{
 					name:         "should deny item if band request capacity exceeded",
 					itemByteSize: 0,
-					stats: contracts.ShardStats{
+					stats: contracts.AggregateStats{
 						PerPriorityBandStats: map[int]contracts.PriorityBandStats{
 							testFlow.Priority: {CapacityRequests: 5, Len: 5},
 						},
@@ -706,7 +748,7 @@ func TestShardProcessor(t *testing.T) {
 				{
 					name:         "should deny item if band stats are missing",
 					itemByteSize: 1,
-					stats: contracts.ShardStats{
+					stats: contracts.AggregateStats{
 						TotalCapacityBytes: 200, TotalByteSize: 100,
 						PerPriorityBandStats: map[int]contracts.PriorityBandStats{}, // Missing stats for priority 10
 					},
@@ -715,7 +757,7 @@ func TestShardProcessor(t *testing.T) {
 				{
 					name:         "should allow item if both shard and band have byte capacity",
 					itemByteSize: 10,
-					stats: contracts.ShardStats{
+					stats: contracts.AggregateStats{
 						TotalCapacityBytes: 200, TotalByteSize: 100,
 						PerPriorityBandStats: map[int]contracts.PriorityBandStats{
 							testFlow.Priority: {ByteSize: 50, CapacityBytes: 100},
@@ -726,7 +768,7 @@ func TestShardProcessor(t *testing.T) {
 				{
 					name:         "should allow item if both shard and band have request capacity",
 					itemByteSize: 0,
-					stats: contracts.ShardStats{
+					stats: contracts.AggregateStats{
 						TotalCapacityRequests: 10, TotalLen: 5,
 						PerPriorityBandStats: map[int]contracts.PriorityBandStats{
 							testFlow.Priority: {CapacityRequests: 8, Len: 3},
@@ -737,7 +779,7 @@ func TestShardProcessor(t *testing.T) {
 				{
 					name:         "should ignore zero-valued capacity limits",
 					itemByteSize: 0,
-					stats: contracts.ShardStats{
+					stats: contracts.AggregateStats{
 						TotalCapacityBytes: 0, TotalByteSize: 999,
 						TotalCapacityRequests: 0, TotalLen: 999,
 						PerPriorityBandStats: map[int]contracts.PriorityBandStats{
@@ -750,7 +792,7 @@ func TestShardProcessor(t *testing.T) {
 				{
 					name:         "should deny if shard bytes ok but band requests exceeded",
 					itemByteSize: 10,
-					stats: contracts.ShardStats{
+					stats: contracts.AggregateStats{
 						TotalCapacityBytes: 200, TotalByteSize: 50,
 						TotalCapacityRequests: 100, TotalLen: 5,
 						PerPriorityBandStats: map[int]contracts.PriorityBandStats{
@@ -762,7 +804,7 @@ func TestShardProcessor(t *testing.T) {
 				{
 					name:         "should deny if shard requests ok but band bytes exceeded",
 					itemByteSize: 10,
-					stats: contracts.ShardStats{
+					stats: contracts.AggregateStats{
 						TotalCapacityBytes: 200, TotalByteSize: 50,
 						TotalCapacityRequests: 100, TotalLen: 5,
 						PerPriorityBandStats: map[int]contracts.PriorityBandStats{
@@ -774,7 +816,7 @@ func TestShardProcessor(t *testing.T) {
 				{
 					name:         "should allow if all four checks pass",
 					itemByteSize: 10,
-					stats: contracts.ShardStats{
+					stats: contracts.AggregateStats{
 						TotalCapacityBytes: 200, TotalByteSize: 50,
 						TotalCapacityRequests: 100, TotalLen: 10,
 						PerPriorityBandStats: map[int]contracts.PriorityBandStats{
@@ -787,7 +829,7 @@ func TestShardProcessor(t *testing.T) {
 				{
 					name:         "should allow when shard bytes exactly at capacity after add",
 					itemByteSize: 10,
-					stats: contracts.ShardStats{
+					stats: contracts.AggregateStats{
 						TotalCapacityBytes: 110, TotalByteSize: 100,
 						PerPriorityBandStats: map[int]contracts.PriorityBandStats{
 							testFlow.Priority: {CapacityBytes: 60, ByteSize: 50},
@@ -798,7 +840,7 @@ func TestShardProcessor(t *testing.T) {
 				{
 					name:         "should deny when shard bytes one over capacity after add",
 					itemByteSize: 11,
-					stats: contracts.ShardStats{
+					stats: contracts.AggregateStats{
 						TotalCapacityBytes: 110, TotalByteSize: 100,
 						PerPriorityBandStats: map[int]contracts.PriorityBandStats{
 							testFlow.Priority: {CapacityBytes: 200, ByteSize: 50},
@@ -809,7 +851,7 @@ func TestShardProcessor(t *testing.T) {
 				{
 					name:         "should allow when shard requests exactly at capacity after add",
 					itemByteSize: 0,
-					stats: contracts.ShardStats{
+					stats: contracts.AggregateStats{
 						TotalCapacityRequests: 10, TotalLen: 9,
 						PerPriorityBandStats: map[int]contracts.PriorityBandStats{
 							testFlow.Priority: {CapacityRequests: 10, Len: 5},
@@ -820,7 +862,7 @@ func TestShardProcessor(t *testing.T) {
 				{
 					name:         "should deny when shard requests one over capacity after add",
 					itemByteSize: 0,
-					stats: contracts.ShardStats{
+					stats: contracts.AggregateStats{
 						TotalCapacityRequests: 10, TotalLen: 10,
 						PerPriorityBandStats: map[int]contracts.PriorityBandStats{
 							testFlow.Priority: {CapacityRequests: 100, Len: 5},
@@ -831,7 +873,7 @@ func TestShardProcessor(t *testing.T) {
 				{
 					name:         "should allow when band bytes exactly at capacity after add",
 					itemByteSize: 10,
-					stats: contracts.ShardStats{
+					stats: contracts.AggregateStats{
 						TotalCapacityBytes: 500, TotalByteSize: 100,
 						PerPriorityBandStats: map[int]contracts.PriorityBandStats{
 							testFlow.Priority: {CapacityBytes: 60, ByteSize: 50},
@@ -842,7 +884,7 @@ func TestShardProcessor(t *testing.T) {
 				{
 					name:         "should deny when band bytes one over capacity after add",
 					itemByteSize: 11,
-					stats: contracts.ShardStats{
+					stats: contracts.AggregateStats{
 						TotalCapacityBytes: 500, TotalByteSize: 100,
 						PerPriorityBandStats: map[int]contracts.PriorityBandStats{
 							testFlow.Priority: {CapacityBytes: 60, ByteSize: 50},
@@ -853,7 +895,7 @@ func TestShardProcessor(t *testing.T) {
 				{
 					name:         "should allow when band requests exactly at capacity after add",
 					itemByteSize: 0,
-					stats: contracts.ShardStats{
+					stats: contracts.AggregateStats{
 						TotalCapacityRequests: 100, TotalLen: 10,
 						PerPriorityBandStats: map[int]contracts.PriorityBandStats{
 							testFlow.Priority: {CapacityRequests: 6, Len: 5},
@@ -864,7 +906,7 @@ func TestShardProcessor(t *testing.T) {
 				{
 					name:         "should deny when band requests one over capacity after add",
 					itemByteSize: 0,
-					stats: contracts.ShardStats{
+					stats: contracts.AggregateStats{
 						TotalCapacityRequests: 100, TotalLen: 10,
 						PerPriorityBandStats: map[int]contracts.PriorityBandStats{
 							testFlow.Priority: {CapacityRequests: 5, Len: 5},
@@ -878,8 +920,8 @@ func TestShardProcessor(t *testing.T) {
 				t.Run(tc.name, func(t *testing.T) {
 					t.Parallel()
 					h := newTestHarness(t, testCleanupTick)
-					h.StatsFunc = func() *contracts.ShardStats { return &tc.stats }
-					hasCap := h.processor.hasCapacity(testFlow.Priority, tc.itemByteSize)
+					h.StatsFunc = func() contracts.AggregateStats { return tc.stats }
+					hasCap, _ := h.processor.hasCapacity(testFlow.Priority, tc.itemByteSize)
 					assert.Equal(t, tc.expectHasCap, hasCap, "Capacity check result should match expected value")
 				})
 			}
@@ -1229,6 +1271,62 @@ func TestShardProcessor(t *testing.T) {
 				// --- ASSERT ---
 				assert.Equal(t, int32(numQueues), processedCount.Load(),
 					"The number of processed queues should match the number created")
+			})
+
+			t.Run("should resolve ManagedQueue eagerly so late GC does not skip work", func(t *testing.T) {
+				t.Parallel()
+				// --- ARRANGE ---
+				// Regression test: ManagedQueue must be resolved during IterateQueues
+				// (Phase 1), not deferred to Phase 3 workers. A deferred lookup
+				// races with flow GC which can delete the flow after collection.
+				//
+				// ManagedQueueFunc succeeds while IterateQueues is running and fails
+				// after it returns, simulating GC firing between phases. With eager
+				// resolution processFn is called; with deferred resolution it is not.
+				h := newTestHarness(t, testCleanupTick)
+				h.addQueue(testFlow)
+
+				var iteratingDone atomic.Bool
+				h.PriorityBandAccessorFunc = func(p int) (flowcontrol.PriorityBandAccessor, error) {
+					h.mu.Lock()
+					flowKeys := h.priorityFlows[p]
+					h.mu.Unlock()
+
+					band := &fwkfcmocks.MockPriorityBandAccessor{PriorityV: p}
+					band.IterateQueuesFunc = func(cb func(fqa flowcontrol.FlowQueueAccessor) bool) {
+						for _, key := range flowKeys {
+							q, err := h.managedQueue(key)
+							if err == nil && q != nil {
+								mq := q.(*mocks.MockManagedQueue)
+								if !cb(mq.FlowQueueAccessor()) {
+									break
+								}
+							}
+						}
+						iteratingDone.Store(true)
+					}
+					return band, nil
+				}
+
+				h.ManagedQueueFunc = func(key flowcontrol.FlowKey) (contracts.ManagedQueue, error) {
+					if iteratingDone.Load() {
+						return nil, fmt.Errorf("failed to get managed queue for flow %q: %w",
+							key, contracts.ErrFlowInstanceNotFound)
+					}
+					return h.managedQueue(key)
+				}
+
+				var processedCount atomic.Int32
+				processFn := func(mq contracts.ManagedQueue, logger logr.Logger) {
+					processedCount.Add(1)
+				}
+
+				// --- ACT ---
+				h.processor.processAllQueuesConcurrently("test-eager-resolve", processFn)
+
+				// --- ASSERT ---
+				assert.Equal(t, int32(1), processedCount.Load(),
+					"processFn must be called: ManagedQueue was resolved eagerly in Phase 1")
 			})
 		})
 	})

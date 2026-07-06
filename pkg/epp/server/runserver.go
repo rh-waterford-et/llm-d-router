@@ -26,6 +26,7 @@ import (
 	"github.com/go-logr/logr"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	_ "google.golang.org/grpc/encoding/gzip" // Register gzip compressor for gRPC.
 	"google.golang.org/grpc/health"
 	healthgrpc "google.golang.org/grpc/health/grpc_health_v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -36,13 +37,13 @@ import (
 	"github.com/llm-d/llm-d-router/internal/runnable"
 	tlsutil "github.com/llm-d/llm-d-router/internal/tls"
 	"github.com/llm-d/llm-d-router/pkg/common"
-	backendmetrics "github.com/llm-d/llm-d-router/pkg/epp/backend/metrics"
 	"github.com/llm-d/llm-d-router/pkg/epp/controller"
 	datalayerlogger "github.com/llm-d/llm-d-router/pkg/epp/datalayer/logger"
 	"github.com/llm-d/llm-d-router/pkg/epp/datastore"
+	"github.com/llm-d/llm-d-router/pkg/epp/flowcontrol/contracts"
 	fwkfc "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/flowcontrol"
-	fwkrh "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/requesthandling"
 	"github.com/llm-d/llm-d-router/pkg/epp/handlers"
+	"github.com/llm-d/llm-d-router/pkg/epp/metrics"
 	"github.com/llm-d/llm-d-router/pkg/epp/requestcontrol"
 )
 
@@ -59,9 +60,12 @@ type ExtProcServerRunner struct {
 	RefreshPrometheusMetricsInterval time.Duration
 	MetricsStalenessThreshold        time.Duration
 	Director                         *requestcontrol.Director
-	Parser                           fwkrh.Parser
+	ParserRegistry                   *handlers.ParserRegistry
 	SaturationDetector               fwkfc.SaturationDetector
-	UseExperimentalDatalayerV2       bool // Pluggable data layer feature flag
+	PriorityBandControlPlane         contracts.PriorityBandControlPlane
+	GRPCMaxRecvMsgSize               int
+	GRPCMaxSendMsgSize               int
+	EnableGRPCStreamMetrics          bool
 }
 
 // NewDefaultExtProcServerRunner creates a runner with default values.
@@ -80,9 +84,17 @@ func NewDefaultExtProcServerRunner() *ExtProcServerRunner {
 		},
 	}
 	return &ExtProcServerRunner{
-		GrpcPort:                         opts.GRPCPort,
-		GKNN:                             gknn,
-		ControllerCfg:                    ControllerConfig{true, true, true},
+		GrpcPort:           opts.GRPCPort,
+		GRPCMaxRecvMsgSize: opts.GRPCMaxRecvMsgSize,
+		GRPCMaxSendMsgSize: opts.GRPCMaxSendMsgSize,
+		GKNN:               gknn,
+		ControllerCfg: ControllerConfig{
+			startCrdReconcilers:       true,
+			hasInferenceObjective:     true,
+			hasInferenceModelRewrites: true,
+			InferenceObjectiveGV:      inferenceAPIGV,
+			InferenceModelRewriteGV:   inferenceAPIGV,
+		},
 		SecureServing:                    opts.SecureServing,
 		HealthChecking:                   opts.HealthChecking,
 		RefreshPrometheusMetricsInterval: opts.RefreshPrometheusMetricsInterval,
@@ -104,9 +116,10 @@ func (r *ExtProcServerRunner) SetupWithManager(mgr ctrl.Manager) error {
 
 		if r.ControllerCfg.hasInferenceObjective {
 			if err := (&controller.InferenceObjectiveReconciler{
-				Datastore: r.Datastore,
-				Reader:    mgr.GetClient(),
-				PoolGKNN:  r.GKNN,
+				Datastore:                r.Datastore,
+				Reader:                   mgr.GetClient(),
+				PoolGKNN:                 r.GKNN,
+				PriorityBandControlPlane: r.PriorityBandControlPlane,
 			}).SetupWithManager(mgr); err != nil {
 				return fmt.Errorf("failed setting up InferenceObjectiveReconciler - %w", err)
 			}
@@ -135,13 +148,10 @@ func (r *ExtProcServerRunner) SetupWithManager(mgr ctrl.Manager) error {
 // The runnable implements LeaderElectionRunnable with leader election disabled.
 func (r *ExtProcServerRunner) AsRunnable(logger logr.Logger) manager.Runnable {
 	return runnable.NoLeaderElection(manager.RunnableFunc(func(ctx context.Context) error {
-		if r.UseExperimentalDatalayerV2 {
-			datalayerlogger.StartMetricsLogger(ctx, r.Datastore, r.RefreshPrometheusMetricsInterval, r.MetricsStalenessThreshold)
-		} else {
-			backendmetrics.StartMetricsLogger(ctx, r.Datastore, r.RefreshPrometheusMetricsInterval, r.MetricsStalenessThreshold)
-		}
+		datalayerlogger.StartMetricsLogger(ctx, r.Datastore, r.RefreshPrometheusMetricsInterval, r.MetricsStalenessThreshold)
 
 		var srv *grpc.Server
+		var creds credentials.TransportCredentials
 		if r.SecureServing {
 			var cert tls.Certificate
 			var err error
@@ -155,7 +165,6 @@ func (r *ExtProcServerRunner) AsRunnable(logger logr.Logger) manager.Runnable {
 				return fmt.Errorf("failed to create self signed certificate - %w", err)
 			}
 
-			var creds credentials.TransportCredentials
 			if r.CertPath != "" && r.EnableCertReload {
 				reloader, err := common.NewCertReloader(ctx, r.CertPath, &cert)
 				if err != nil {
@@ -173,13 +182,31 @@ func (r *ExtProcServerRunner) AsRunnable(logger logr.Logger) manager.Runnable {
 					NextProtos:   []string{"h2"},
 				})
 			}
-			// Init the server.
-			srv = grpc.NewServer(grpc.Creds(creds))
-		} else {
-			srv = grpc.NewServer()
 		}
 
-		extProcServer := handlers.NewStreamingServer(r.Datastore, r.Director, r.Parser)
+		var grpcOpts []grpc.ServerOption
+		if creds != nil {
+			grpcOpts = append(grpcOpts, grpc.Creds(creds))
+		}
+		if r.GRPCMaxRecvMsgSize > 0 {
+			grpcOpts = append(grpcOpts, grpc.MaxRecvMsgSize(r.GRPCMaxRecvMsgSize))
+		}
+		if r.GRPCMaxSendMsgSize > 0 {
+			grpcOpts = append(grpcOpts, grpc.MaxSendMsgSize(r.GRPCMaxSendMsgSize))
+		}
+		if r.EnableGRPCStreamMetrics {
+			metrics.RegisterGRPCStreamMetrics()
+			grpcOpts = append(grpcOpts, grpc.ChainStreamInterceptor(streamMetricsInterceptor))
+		}
+		// Note: gzip compressor is registered via blank import above.
+
+		srv = grpc.NewServer(grpcOpts...)
+
+		poolCap := r.GRPCMaxRecvMsgSize
+		if poolCap == 0 {
+			poolCap = 4 * 1024 * 1024 // gRPC default 4MB
+		}
+		extProcServer := handlers.NewStreamingServer(r.Datastore, r.Director, r.ParserRegistry, poolCap)
 		extProcPb.RegisterExternalProcessorServer(srv, extProcServer)
 
 		if r.HealthChecking {

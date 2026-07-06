@@ -119,5 +119,5 @@ func (s *Server) inferenceHandler(w http.ResponseWriter, r *http.Request) {
 
 	s.logger.V(4).Info("inference: disaggregated execution",
 		"targetEndpoint", req.Endpoint, "prefillTarget", prefillHostPort)
-	s.runPDConnectorProtocol(w, r, prefillHostPort, APITypeChatCompletions)
+	s.handlePDConnector(w, r, prefillHostPort, APITypeChatCompletions)
 }

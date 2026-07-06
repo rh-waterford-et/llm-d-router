@@ -35,7 +35,7 @@ func TestDiffusionScorer_IdlePodGetsHighScore(t *testing.T) {
 		}, nil),
 	}
 
-	scores := s.Score(context.Background(), nil, nil, endpoints)
+	scores := s.Score(context.Background(), nil, endpoints)
 	score := scores[endpoints[0]]
 	// 0.8 * 1.0 + 0.2 * 0.9 = 0.98
 	assert.InDelta(t, 0.98, score, 0.01)
@@ -54,7 +54,7 @@ func TestDiffusionScorer_QueueHeavilyWeighted(t *testing.T) {
 		}, nil),
 	}
 
-	scores := s.Score(context.Background(), nil, nil, endpoints)
+	scores := s.Score(context.Background(), nil, endpoints)
 	// queued: 0.8 * 0.5 + 0.2 * 1.0 = 0.6
 	// memory: 0.8 * 1.0 + 0.2 * 0.1 = 0.82
 	assert.Greater(t, scores[endpoints[1]], scores[endpoints[0]],
@@ -70,7 +70,7 @@ func TestDiffusionScorer_LowThreshold(t *testing.T) {
 		}, nil),
 	}
 
-	scores := s.Score(context.Background(), nil, nil, endpoints)
+	scores := s.Score(context.Background(), nil, endpoints)
 	score := scores[endpoints[0]]
 	// 0.8 * 0.0 + 0.2 * 0.5 = 0.1
 	assert.InDelta(t, 0.1, score, 0.01)

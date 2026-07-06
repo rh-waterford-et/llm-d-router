@@ -21,6 +21,7 @@ import (
 	"context"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
@@ -29,23 +30,28 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
+	otelcodes "go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	"strconv"
+
 	envoy "github.com/llm-d/llm-d-router/pkg/common/envoy"
 	errcommon "github.com/llm-d/llm-d-router/pkg/common/error"
 	logutil "github.com/llm-d/llm-d-router/pkg/common/observability/logging"
+	"github.com/llm-d/llm-d-router/pkg/common/observability/tracing"
 	reqcommon "github.com/llm-d/llm-d-router/pkg/common/request"
 	"github.com/llm-d/llm-d-router/pkg/epp/datalayer"
+	fwkrequest "github.com/llm-d/llm-d-router/pkg/epp/framework/common/request"
 	fwkdl "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/datalayer"
 	fwkrh "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/requesthandling"
 	fwksched "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/scheduling"
+	"github.com/llm-d/llm-d-router/pkg/epp/metadata"
 	"github.com/llm-d/llm-d-router/pkg/epp/metrics"
-	"github.com/llm-d/llm-d-router/version"
 )
 
 // EvictChannelLookup is an optional interface for looking up eviction channels by request ID.
@@ -57,11 +63,17 @@ type EvictChannelLookup interface {
 	Deregister(requestID string)
 }
 
-func NewStreamingServer(datastore Datastore, director Director, parser fwkrh.Parser) *StreamingServer {
+func NewStreamingServer(datastore Datastore, director Director, parserRegistry *ParserRegistry, maxPoolBufferSize int) *StreamingServer {
 	return &StreamingServer{
-		director:  director,
-		datastore: datastore,
-		parser:    parser,
+		director:          director,
+		datastore:         datastore,
+		parserRegistry:    parserRegistry,
+		maxPoolBufferSize: maxPoolBufferSize,
+		bufferPool: sync.Pool{
+			New: func() any {
+				return new(bytes.Buffer)
+			},
+		},
 	}
 }
 
@@ -84,10 +96,12 @@ type Datastore interface {
 // Server implements the Envoy external processing server.
 // https://www.envoyproxy.io/docs/envoy/latest/api-v3/service/ext_proc/v3/external_processor.proto
 type StreamingServer struct {
-	datastore      Datastore
-	director       Director
-	parser         fwkrh.Parser
-	evictionLookup EvictChannelLookup // optional, set for eviction support
+	datastore         Datastore
+	director          Director
+	parserRegistry    *ParserRegistry
+	evictionLookup    EvictChannelLookup // optional, set for eviction support
+	bufferPool        sync.Pool
+	maxPoolBufferSize int
 }
 
 // RequestContext stores context information during the life time of an HTTP request.
@@ -96,23 +110,25 @@ type StreamingServer struct {
 // Refactor this monolithic struct. Fields related to the Envoy ext-proc protocol should be decoupled from the internal
 // request lifecycle state.
 type RequestContext struct {
-	TargetPod                 *fwkdl.EndpointMetadata
-	TargetEndpoint            string
-	IncomingModelName         string
-	TargetModelName           string
-	FairnessID                string
-	ObjectiveKey              string
-	Priority                  int
-	RequestReceivedTimestamp  time.Time
-	ResponseCompleteTimestamp time.Time
-	RequestSize               int
-	Usage                     fwkrh.Usage
-	ResponseSize              int
-	ResponseBodyStarted       bool
-	ResponseComplete          bool
-	ResponseStatusCode        string
-	RequestRunning            bool
-	Request                   *Request
+	TargetPod                  *fwkdl.EndpointMetadata
+	TargetEndpoint             string
+	IncomingModelName          string
+	TargetModelName            string
+	ObjectiveKey               string
+	Priority                   int
+	RequestReceivedTimestamp   time.Time
+	FirstTokenTimestamp        time.Time
+	ResponseCompleteTimestamp  time.Time
+	LastChunkReceivedTimestamp time.Time
+	RequestSize                int
+	Usage                      fwkrh.Usage
+	ResponseSize               int
+	ResponseBodyStarted        bool
+	ResponseComplete           bool
+	ResponseStatusCode         string
+	RequestRunning             bool
+	Request                    *Request
+	Parser                     fwkrh.Parser
 
 	SchedulingRequest *fwksched.InferenceRequest
 
@@ -152,11 +168,12 @@ const (
 	BodyResponseResponsesComplete    StreamRequestState = 6
 	TrailerResponseResponsesComplete StreamRequestState = 7
 	// RequestEvicted indicates the request was evicted by flow control.
-	// The state machine sends an ImmediateResponse(429) to Envoy.
+	// The state machine sends an ImmediateResponse(429) to the proxy.
 	RequestEvicted StreamRequestState = 8
-	// RequestSkipped indicates the request parsing was skipped.
-	// The state machine sends a RequestHeadersResponse and RequestBodyResponse with fallback routing(randomly pick an endpoint from inferencePool) to Envoy.
-	RequestSkipped StreamRequestState = 9
+	// RequestResponseProcessingSkipped indicates that EPP response-phase stream interception was skipped for this request.
+	// The state machine sends a RequestHeadersResponse and RequestBodyResponse with the routing decision
+	// from the scheduling director to the proxy, and then gracefully closes the stream to stop further external processing.
+	RequestResponseProcessingSkipped StreamRequestState = 9
 )
 
 // recvResult holds the result of a srv.Recv() call from the reader goroutine.
@@ -165,19 +182,71 @@ type recvResult struct {
 	err error
 }
 
+func (s *StreamingServer) getOrResolveParser(ctx context.Context, reqCtx *RequestContext) (fwkrh.Parser, error) {
+	if reqCtx.Parser != nil {
+		return reqCtx.Parser, nil
+	}
+
+	logger := log.FromContext(ctx)
+	var headers map[string]string
+	if reqCtx.Request != nil {
+		headers = reqCtx.Request.Headers
+	}
+	path := fwkrequest.GetRequestPath(headers)
+	parser, err := s.parserRegistry.Resolve(path)
+	if err != nil {
+		logger.Error(err, "Error resolving parser for path", "path", path)
+		return nil, err
+	}
+
+	reqCtx.Parser = parser
+	return parser, nil
+}
+
+// extractTraceContext returns ctx augmented with the upstream trace context
+// carried in the incoming Envoy request headers (e.g. the traceparent set by the
+// client or the Gateway), using the globally configured text map propagator.
+//
+// The header wire format is the W3C Trace Context spec:
+// https://www.w3.org/TR/trace-context/
+// Extraction uses OpenTelemetry context propagation:
+// https://opentelemetry.io/docs/concepts/context-propagation/
+func extractTraceContext(ctx context.Context, req *extProcPb.ProcessingRequest_RequestHeaders) context.Context {
+	carrier := make(propagation.MapCarrier)
+	if req != nil && req.RequestHeaders != nil && req.RequestHeaders.Headers != nil {
+		for _, header := range req.RequestHeaders.Headers.Headers {
+			carrier[strings.ToLower(header.Key)] = envoy.GetHeaderValue(header)
+		}
+	}
+	return otel.GetTextMapPropagator().Extract(ctx, carrier)
+}
+
+func extractFairnessAndPriority(reqCtx *RequestContext) (string, string) {
+	if reqCtx == nil {
+		return metadata.DefaultFairnessID, "0"
+	}
+	fairnessID := metadata.DefaultFairnessID
+	if reqCtx.SchedulingRequest != nil && reqCtx.SchedulingRequest.FairnessID != "" {
+		fairnessID = reqCtx.SchedulingRequest.FairnessID
+	}
+	priority := strconv.Itoa(reqCtx.Priority)
+	return fairnessID, priority
+}
+
 func (s *StreamingServer) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 	ctx := srv.Context()
 
 	// Start tracing span for the request
-	tracer := otel.Tracer(
-		"llm-d-router/epp/extproc",
-		trace.WithInstrumentationVersion(version.BuildRef),
-		trace.WithInstrumentationAttributes(
-			attribute.String("commit-sha", version.CommitSHA),
-		),
-	)
-	ctx, span := tracer.Start(ctx, "gateway.request", trace.WithSpanKind(trace.SpanKindServer))
-	defer span.End()
+	tracer := tracing.Tracer("llm-d-router/pkg/epp/handlers")
+	// The server span is started in the RequestHeaders branch, once the upstream
+	// trace context carried in the incoming headers is available, so the EPP span
+	// joins the caller's trace instead of starting a disconnected root.
+	var span trace.Span
+	defer func() {
+		if span != nil {
+			span.End()
+		}
+	}()
 
 	logger := log.FromContext(ctx)
 	loggerTrace := logger.V(logutil.TRACE)
@@ -196,7 +265,15 @@ func (s *StreamingServer) Process(srv extProcPb.ExternalProcessor_ProcessServer)
 		},
 	}
 
-	var body []byte
+	buf := s.bufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer func() {
+		// Return to pool if capacity is within limits.
+		if buf.Cap() <= s.maxPoolBufferSize || s.maxPoolBufferSize == 0 {
+			s.bufferPool.Put(buf)
+		}
+	}()
+	var respBody []byte
 	var evictionRequestID string
 
 	// Start a single reader goroutine for the lifetime of the stream.
@@ -234,13 +311,22 @@ func (s *StreamingServer) Process(srv extProcPb.ExternalProcessor_ProcessServer)
 		if s.evictionLookup != nil && evictionRequestID != "" {
 			s.evictionLookup.Deregister(evictionRequestID)
 		}
+		fairnessID, priority := extractFairnessAndPriority(reqCtx)
 		if reqCtx.ResponseStatusCode != "" {
-			metrics.RecordRequestErrCounter(reqCtx.IncomingModelName, reqCtx.TargetModelName, reqCtx.ResponseStatusCode)
+			metrics.RecordRequestErrCounter(reqCtx.IncomingModelName, reqCtx.TargetModelName, fairnessID, priority, reqCtx.ResponseStatusCode)
 		} else if err != nil {
-			metrics.RecordRequestErrCounter(reqCtx.IncomingModelName, reqCtx.TargetModelName, errcommon.CanonicalCode(err))
+			metrics.RecordRequestErrCounter(reqCtx.IncomingModelName, reqCtx.TargetModelName, fairnessID, priority, errcommon.CanonicalCode(err))
+		}
+		if span != nil {
+			if err != nil {
+				span.RecordError(err)
+				span.SetStatus(otelcodes.Error, err.Error())
+			} else if reqCtx.ResponseStatusCode != "" {
+				span.SetStatus(otelcodes.Error, reqCtx.ResponseStatusCode)
+			}
 		}
 		if reqCtx.RequestRunning {
-			metrics.DecRunningRequests(reqCtx.IncomingModelName)
+			metrics.DecRunningRequests(reqCtx.IncomingModelName, reqCtx.TargetModelName, fairnessID, priority)
 		}
 
 		// If we scheduled a pod (TargetPod != nil) but never marked the response  as complete (e.g. error, disconnect,
@@ -310,34 +396,41 @@ func (s *StreamingServer) Process(srv extProcPb.ExternalProcessor_ProcessServer)
 			loggerTrace = logger.V(logutil.TRACE)
 			ctx = log.IntoContext(ctx, logger)
 
+			// Re-parent the server span to the upstream trace context (e.g. the
+			// traceparent set by the client or the Gateway) carried in the incoming
+			// headers, then start it. The headers are only available here, so the span
+			// cannot be started at the top of Process without orphaning the trace.
+			ctx = extractTraceContext(ctx, v)
+			ctx, span = tracer.Start(ctx, "gateway.request", trace.WithSpanKind(trace.SpanKindServer))
+
 			err = s.HandleRequestHeaders(ctx, reqCtx, v)
 		case *extProcPb.ProcessingRequest_RequestBody:
 			loggerTrace.Info("Incoming body chunk", "EoS", v.RequestBody.EndOfStream)
 			// In the stream case, we can receive multiple request bodies.
-			body = append(body, v.RequestBody.Body...)
+			buf.Write(v.RequestBody.Body)
 
 			// Message is buffered, we can read and decode.
 			if v.RequestBody.EndOfStream {
 				loggerTrace.Info("decoding")
-				reqCtx.Request.RawBody = body
+				reqCtx.Request.RawBody = make([]byte, buf.Len())
+				copy(reqCtx.Request.RawBody, buf.Bytes())
 
 				// Body stream complete. Capture raw size for flow control.
-				reqCtx.RequestSize = len(body)
-				body = []byte{}
+				reqCtx.RequestSize = buf.Len()
+				buf.Reset()
 
-				parseResult, parseErr := s.parser.ParseRequest(ctx, reqCtx.Request.RawBody, reqCtx.Request.Headers)
+				parser, resolveErr := s.getOrResolveParser(ctx, reqCtx)
+				if resolveErr != nil {
+					err = errcommon.Error{Code: errcommon.BadRequest, Msg: resolveErr.Error()}
+					logger.Error(err, "Error resolving parser for request body")
+					break
+				}
+				before := time.Now()
+				parseResult, parseErr := parser.ParseRequest(ctx, reqCtx.Request.RawBody, reqCtx.Request.Headers)
+				metrics.RecordPluginProcessingLatency(fwkrh.RequestParsingExtensionPoint, parser.TypedName().Type, parser.TypedName().Name, time.Since(before))
 				if parseErr != nil {
 					err = errcommon.Error{Code: errcommon.BadRequest, Msg: parseErr.Error()}
 					logger.Error(err, "Error parsing request")
-					break
-				}
-
-				if parseResult.Skip {
-					if err = s.fallbackToRandomEndpoint(ctx, reqCtx, reqCtx.RequestSize); err != nil {
-						logger.Error(err, "Error falling back to random endpoint")
-						break
-					}
-					reqCtx.RequestState = RequestSkipped
 					break
 				}
 
@@ -361,8 +454,13 @@ func (s *StreamingServer) Process(srv extProcPb.ExternalProcessor_ProcessServer)
 
 				reqCtx.reqHeaderResp = s.generateRequestHeaderResponse(ctx, reqCtx)
 				reqCtx.reqBodyResp = envoy.GenerateRequestBodyResponses(reqCtx.Request.RawBody)
-				metrics.RecordRequestCounter(reqCtx.IncomingModelName, reqCtx.TargetModelName, reqCtx.Priority)
-				metrics.RecordRequestSizes(reqCtx.IncomingModelName, reqCtx.TargetModelName, reqCtx.RequestSize)
+				fairnessID, priority := extractFairnessAndPriority(reqCtx)
+				metrics.RecordRequestCounter(reqCtx.IncomingModelName, reqCtx.TargetModelName, fairnessID, reqCtx.Priority)
+				metrics.RecordRequestSizes(reqCtx.IncomingModelName, reqCtx.TargetModelName, fairnessID, priority, reqCtx.RequestSize)
+
+				if parseResult.SkipResponseProcessing {
+					reqCtx.RequestState = RequestResponseProcessingSkipped
+				}
 			}
 		case *extProcPb.ProcessingRequest_RequestTrailers:
 			// This is currently unused.
@@ -396,16 +494,16 @@ func (s *StreamingServer) Process(srv extProcPb.ExternalProcessor_ProcessServer)
 				// For streaming response, we send response chunk back to envoy every time we received it.
 				reqCtx.respBodyResp = generateResponseBodyResponses(chunk, endOfStream, reqCtx.Response.DynamicMetadata)
 			} else {
-				body = append(body, chunk...)
+				respBody = append(respBody, chunk...)
 				if endOfStream {
-					s.finishResponse(ctx, reqCtx, body, reqCtx.modelServerStreaming, true)
+					s.finishResponse(ctx, reqCtx, respBody, reqCtx.modelServerStreaming, true)
 				}
 			}
 		case *extProcPb.ProcessingRequest_ResponseTrailers:
 			// For HTTP, the response trailer is not sent. Thus, this case will not be triggered.
 			// For gRPC(over HTTP2), the protocol relies on responseTrailers to determine whether a response is complete.
 			// More info: https://chromium.googlesource.com/external/github.com/grpc/grpc/+/HEAD/doc/PROTOCOL-HTTP2.md#responses
-			s.finishResponse(ctx, reqCtx, body, reqCtx.modelServerStreaming, false)
+			s.finishResponse(ctx, reqCtx, respBody, reqCtx.modelServerStreaming, false)
 			reqCtx.respTrailerResp = &extProcPb.ProcessingResponse{
 				Response: &extProcPb.ProcessingResponse_ResponseTrailers{
 					ResponseTrailers: &extProcPb.TrailersResponse{},
@@ -434,8 +532,10 @@ func (s *StreamingServer) Process(srv extProcPb.ExternalProcessor_ProcessServer)
 		if err := reqCtx.updateStateAndSendIfNeeded(srv, logger); err != nil {
 			return err
 		}
-		if reqCtx.RequestState == RequestSkipped {
-			logger.V(logutil.DEFAULT).Info("EPP skipped the request")
+		if reqCtx.RequestState == RequestResponseProcessingSkipped {
+			logger.V(logutil.DEFAULT).Info("EPP skipped response interception, routed request",
+				"targetEndpoint", reqCtx.TargetEndpoint,
+				"targetModel", reqCtx.TargetModelName)
 			// Gracefully close the gRPC stream to stop external processing for this request.
 			// This ensures Envoy continues with the request without calling further phases.
 			// See: https://github.com/envoyproxy/envoy/blob/0533de0acca281110945e5726bbb306fbb12bde5/api/envoy/service/ext_proc/v3/external_processor.proto#L40-L41
@@ -517,8 +617,8 @@ func (r *RequestContext) updateStateAndSendIfNeeded(srv extProcPb.ExternalProces
 		})
 	}
 
-	// Handle skip — send response with fallback routing to the proxy.
-	if r.RequestState == RequestSkipped {
+	// Handle skip — send response with the director's routing decision to the proxy.
+	if r.RequestState == RequestResponseProcessingSkipped {
 		if r.reqHeaderResp != nil {
 			if err := srv.Send(r.reqHeaderResp); err != nil {
 				logger.Error(err, "error sending response")
@@ -555,7 +655,8 @@ func (r *RequestContext) updateStateAndSendIfNeeded(srv extProcPb.ExternalProces
 		}
 		logger.V(logutil.DEFAULT).Info("EPP sent request body response(s) to proxy", "modelName", r.IncomingModelName, "targetModelName", r.TargetModelName)
 		r.RequestState = BodyRequestResponsesComplete
-		metrics.IncRunningRequests(r.IncomingModelName)
+		fairnessID, priority := extractFairnessAndPriority(r)
+		metrics.IncRunningRequests(r.IncomingModelName, r.TargetModelName, fairnessID, priority)
 		r.RequestRunning = true
 		// Dump the response so a new stream message can begin
 		r.reqBodyResp = nil

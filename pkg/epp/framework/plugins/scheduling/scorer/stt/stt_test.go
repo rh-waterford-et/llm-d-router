@@ -35,7 +35,7 @@ func TestSTTScorer_IdlePodGetsHighScore(t *testing.T) {
 		}, nil),
 	}
 
-	scores := s.Score(context.Background(), nil, nil, endpoints)
+	scores := s.Score(context.Background(), nil, endpoints)
 	score := scores[endpoints[0]]
 	// 0.6 * 1.0 + 0.4 * 1.0 = 1.0
 	assert.InDelta(t, 1.0, score, 0.01)
@@ -54,7 +54,7 @@ func TestSTTScorer_PrefersLessActiveRequests(t *testing.T) {
 		}, nil),
 	}
 
-	scores := s.Score(context.Background(), nil, nil, endpoints)
+	scores := s.Score(context.Background(), nil, endpoints)
 	assert.Greater(t, scores[endpoints[0]], scores[endpoints[1]],
 		"endpoint with fewer active requests should score higher (more encoder batch headroom)")
 }
@@ -68,7 +68,7 @@ func TestSTTScorer_SaturatedPodGetsLowScore(t *testing.T) {
 		}, nil),
 	}
 
-	scores := s.Score(context.Background(), nil, nil, endpoints)
+	scores := s.Score(context.Background(), nil, endpoints)
 	score := scores[endpoints[0]]
 	assert.InDelta(t, 0.0, score, 0.01, "fully saturated endpoint should score ~0")
 }

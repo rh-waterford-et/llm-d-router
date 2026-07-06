@@ -57,6 +57,8 @@ schedulingProfiles:
 			{Name: "prefix-cache-scorer", Type: "prefix-cache-scorer"},
 			// The producer is auto created because the prefix-cache-scorer consumes its data.
 			{Name: "approx-prefix-cache-producer", Type: "approx-prefix-cache-producer"},
+			// Auto created transitively: the approx producer consumes TokenizedPrompt.
+			{Name: "token-producer", Type: "token-producer"},
 		},
 	},
 	"tiered-prefix-cache-cpu": {
@@ -64,6 +66,7 @@ schedulingProfiles:
 apiVersion: llm-d.ai/v1alpha1
 kind: EndpointPickerConfig
 plugins:
+- type: token-producer
 - type: approx-prefix-cache-producer
   name: cpu-prefix-cache-producer
   parameters:
@@ -76,7 +79,7 @@ plugins:
 - type: prefix-cache-scorer
   name: cpu-prefix-cache-scorer
   parameters:
-    producer: cpu-prefix-cache-producer
+    prefixMatchInfoProducerName: cpu-prefix-cache-producer
 schedulingProfiles:
 - name: default
   plugins:
@@ -90,6 +93,7 @@ schedulingProfiles:
     weight: 1.0
 `,
 		expectedPlugins: []configapi.PluginSpec{
+			{Name: "token-producer", Type: "token-producer"},
 			{Name: "approx-prefix-cache-producer", Type: "approx-prefix-cache-producer"}, // this one is auto configured.
 			{Name: "cpu-prefix-cache-producer", Type: "approx-prefix-cache-producer"},    // this one is configured manually.
 			{Name: "queue-scorer", Type: "queue-scorer"},
@@ -104,10 +108,11 @@ apiVersion: llm-d.ai/v1alpha1
 kind: EndpointPickerConfig
 plugins:
 - type: disagg-headers-handler
-- type: always-disagg-pd-decider
 - type: disagg-profile-handler
   parameters:
-    deciderPluginName: always-disagg-pd-decider
+    deciders:
+      prefill: always-disagg-pd-decider
+- type: always-disagg-pd-decider
 - type: prefill-filter
 - type: decode-filter
 - type: prefix-cache-scorer
@@ -144,6 +149,8 @@ schedulingProfiles:
 			{Name: "prefix-cache-scorer", Type: "prefix-cache-scorer"},
 			// The producer is auto created because the prefix-cache-scorer consumes its data.
 			{Name: "approx-prefix-cache-producer", Type: "approx-prefix-cache-producer"},
+			// Auto created transitively: the approx producer consumes TokenizedPrompt.
+			{Name: "token-producer", Type: "token-producer"},
 			{Name: "queue-scorer", Type: "queue-scorer"},
 			{Name: "kv-cache-utilization-scorer", Type: "kv-cache-utilization-scorer"},
 			{Name: "active-request-scorer", Type: "active-request-scorer"},
@@ -156,10 +163,11 @@ apiVersion: llm-d.ai/v1alpha1
 kind: EndpointPickerConfig
 plugins:
 - type: disagg-headers-handler
-- type: always-disagg-pd-decider
 - type: disagg-profile-handler
   parameters:
-    deciderPluginName: always-disagg-pd-decider
+    deciders:
+      prefill: always-disagg-pd-decider
+- type: always-disagg-pd-decider
 - type: prefill-filter
 - type: decode-filter
 - type: prefix-cache-scorer
@@ -195,6 +203,8 @@ schedulingProfiles:
 			{Name: "prefix-cache-scorer", Type: "prefix-cache-scorer"},
 			// The producer is auto created because the prefix-cache-scorer consumes its data.
 			{Name: "approx-prefix-cache-producer", Type: "approx-prefix-cache-producer"},
+			// Auto created transitively: the approx producer consumes TokenizedPrompt.
+			{Name: "token-producer", Type: "token-producer"},
 			{Name: "queue-scorer", Type: "queue-scorer"},
 			{Name: "kv-cache-utilization-scorer", Type: "kv-cache-utilization-scorer"},
 			{Name: "active-request-scorer", Type: "active-request-scorer"},
@@ -206,6 +216,7 @@ schedulingProfiles:
 apiVersion: llm-d.ai/v1alpha1
 kind: EndpointPickerConfig
 plugins:
+- type: token-producer
 - type: prefix-based-pd-decider
 - type: prefill-header-handler
 - type: prefill-filter
@@ -214,9 +225,6 @@ plugins:
 - type: active-request-scorer
 - type: queue-scorer
 - type: pd-profile-handler
-  parameters:
-    threshold: 0
-    hashBlockSize: 5
 schedulingProfiles:
 - name: prefill
   plugins:
@@ -236,6 +244,7 @@ schedulingProfiles:
     weight: 1
 `,
 		expectedPlugins: []configapi.PluginSpec{
+			{Name: "token-producer", Type: "token-producer"},
 			{Name: "prefill-header-handler", Type: "disagg-headers-handler"},
 			{Name: "prefill-filter", Type: "by-label"},
 			{Name: "decode-filter", Type: "by-label"},
@@ -273,9 +282,9 @@ schedulingProfiles:
     weight: 2
   - pluginRef: prefix-cache-scorer
     weight: 3
-saturationDetector:
-  pluginRef: concurrency-detector
 flowControl:
+  saturationDetector:
+    pluginRef: concurrency-detector
   maxBytes: "10Gi"
   maxRequests: "1k"
   defaultRequestTTL: "60s"
@@ -299,6 +308,8 @@ flowControl:
 			{Name: "prefix-cache-scorer", Type: "prefix-cache-scorer"},
 			// The producer is auto created because the prefix-cache-scorer consumes its data.
 			{Name: "approx-prefix-cache-producer", Type: "approx-prefix-cache-producer"},
+			// Auto created transitively: the approx producer consumes TokenizedPrompt.
+			{Name: "token-producer", Type: "token-producer"},
 			{Name: "round-robin-fairness-policy", Type: "round-robin-fairness-policy"},
 			{Name: "fcfs-ordering-policy", Type: "fcfs-ordering-policy"},
 			{Name: "concurrency-detector", Type: "concurrency-detector"},
@@ -349,6 +360,8 @@ schedulingProfiles:
 			{Name: "prefix-cache-scorer", Type: "prefix-cache-scorer"},
 			// The producer is auto created because the prefix-cache-scorer consumes its data.
 			{Name: "approx-prefix-cache-producer", Type: "approx-prefix-cache-producer"},
+			// Auto created transitively: the approx producer consumes TokenizedPrompt.
+			{Name: "token-producer", Type: "token-producer"},
 			{Name: "metrics-data-source", Type: "metrics-data-source"},
 			{Name: "core-metrics-extractor", Type: "core-metrics-extractor"},
 			{Name: "predicted-latency-producer", Type: "predicted-latency-producer"},
@@ -358,6 +371,31 @@ schedulingProfiles:
 			{Name: "weighted-random-picker", Type: "weighted-random-picker"},
 			{Name: "slo-headroom-tier-filter", Type: "slo-headroom-tier-filter"},
 			{Name: "latency-slo-admitter", Type: "latency-slo-admitter"},
+		},
+	},
+	"payload-agnostic": {
+		yaml: `
+apiVersion: llm-d.ai/v1alpha1
+kind: EndpointPickerConfig
+plugins:
+- type: passthrough-parser
+- type: active-request-scorer
+- type: session-affinity-scorer
+requestHandler:
+  parsers:
+  - pluginRef: passthrough-parser
+schedulingProfiles:
+- name: default
+  plugins:
+  - pluginRef: active-request-scorer
+    weight: 1
+  - pluginRef: session-affinity-scorer
+    weight: 1
+`,
+		expectedPlugins: []configapi.PluginSpec{
+			{Name: "passthrough-parser", Type: "passthrough-parser"},
+			{Name: "active-request-scorer", Type: "active-request-scorer"},
+			{Name: "session-affinity-scorer", Type: "session-affinity-scorer"},
 		},
 	},
 }

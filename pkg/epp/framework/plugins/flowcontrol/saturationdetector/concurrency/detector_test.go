@@ -82,7 +82,7 @@ func TestConcurrencyDetectorFactory(t *testing.T) {
 	}{
 		{
 			name:       "valid configuration",
-			configJSON: []byte(`{"mode": "requests", "maxConcurrency": 50, "headroom": 0.2}`),
+			configJSON: []byte(`{"maxConcurrency": 50, "headroom": 0.2}`),
 			wantError:  false,
 		},
 		{
@@ -127,7 +127,7 @@ func TestConcurrencyDetectorFactory(t *testing.T) {
 			t.Parallel()
 
 			plugin, err := ConcurrencyDetectorFactory("test-concurrency-detector",
-				tc.configJSON, fwkplugin.NewEppHandle(t.Context(), func() []types.NamespacedName { return nil }))
+				fwkplugin.StrictDecoder(tc.configJSON), fwkplugin.NewEppHandle(t.Context(), func() []types.NamespacedName { return nil }))
 			if tc.wantError {
 				require.Error(t, err, "Expected initialization to fail on invalid configuration")
 				require.Nil(t, plugin, "Plugin must be nil when initialization fails")
@@ -182,14 +182,14 @@ func TestDetector_Configuration(t *testing.T) {
 		endpointName := "test-endpoint"
 
 		driveLoad(ctx, reg, detector, endpointName, int(tc.effectiveHeadroomBurst-1))
-		kept := detector.Filter(ctx, nil, nil, []fwksched.Endpoint{newStubSchedulingEndpoint(reg, endpointName)})
+		kept := detector.Filter(ctx, nil, []fwksched.Endpoint{newStubSchedulingEndpoint(reg, endpointName)})
 		require.Len(t, kept, 1, "Endpoint should be retained when operating below burst capacity")
 
 		driveLoad(ctx, reg, detector, endpointName, 1)
 
 		t.Run("fallback to clean endpoint", func(t *testing.T) {
 			cleanEndpoint := "clean-endpoint"
-			kept = detector.Filter(ctx, nil, nil, []fwksched.Endpoint{
+			kept = detector.Filter(ctx, nil, []fwksched.Endpoint{
 				newStubSchedulingEndpoint(reg, endpointName),
 				newStubSchedulingEndpoint(reg, cleanEndpoint),
 			})
@@ -202,7 +202,7 @@ func TestDetector_Configuration(t *testing.T) {
 // TestDetector_TypedName verifies that the runtime type identification of the plugin is populated
 func TestDetector_TypedName(t *testing.T) {
 	t.Parallel()
-	plugin, err := ConcurrencyDetectorFactory("test-plugin", []byte(`{}`), fwkplugin.NewEppHandle(
+	plugin, err := ConcurrencyDetectorFactory("test-plugin", fwkplugin.StrictDecoder([]byte(`{}`)), fwkplugin.NewEppHandle(
 		t.Context(), func() []types.NamespacedName { return nil }))
 	require.NoError(t, err, "Plugin initialization should succeed")
 	require.Equal(t, "test-plugin", plugin.TypedName().Name)
@@ -349,7 +349,7 @@ func TestDetector_TokenSaturation(t *testing.T) {
 		{
 			name: "single_endpoint_partial_tokens",
 			requests: []*fwksched.InferenceRequest{
-				makeTokenRequest("r1", "1234"), // 3 tokens with default estimator
+				makeTokenRequest("r1", 1), // 1 input -> 3 total tokens
 			},
 			candidateEndpoints: []string{"endpoint-a"},
 			wantSaturation:     0.03, // 3/100
@@ -357,11 +357,10 @@ func TestDetector_TokenSaturation(t *testing.T) {
 		{
 			name: "single_endpoint_half_full",
 			requests: func() []*fwksched.InferenceRequest {
-				// "1234567890123456" (16 chars) = 10 tokens. 5 requests = 50 tokens.
-				prompt := "1234567890123456"
+				// 4 input -> 10 total tokens per request * 5 requests = 50 tokens.
 				reqs := make([]*fwksched.InferenceRequest, 0, 5)
 				for i := range 5 {
-					reqs = append(reqs, makeTokenRequest(fmt.Sprintf("r%d", i+1), prompt))
+					reqs = append(reqs, makeTokenRequest(fmt.Sprintf("r%d", i+1), 4))
 				}
 				return reqs
 			}(),
@@ -371,11 +370,10 @@ func TestDetector_TokenSaturation(t *testing.T) {
 		{
 			name: "single_endpoint_full",
 			requests: func() []*fwksched.InferenceRequest {
-				// 10 tokens per request * 10 requests = 100 tokens.
-				prompt := "1234567890123456"
+				// 4 input -> 10 total tokens per request * 10 requests = 100 tokens.
 				reqs := make([]*fwksched.InferenceRequest, 0, 10)
 				for i := range 10 {
-					reqs = append(reqs, makeTokenRequest(fmt.Sprintf("r%d", i+1), prompt))
+					reqs = append(reqs, makeTokenRequest(fmt.Sprintf("r%d", i+1), 4))
 				}
 				return reqs
 			}(),
@@ -386,10 +384,9 @@ func TestDetector_TokenSaturation(t *testing.T) {
 			name: "multiple_endpoints_mixed_token_load",
 			requests: func() []*fwksched.InferenceRequest {
 				// endpoint-a: 50 tokens, endpoint-b: 0 (driveTokenLoad targets endpoint-a only)
-				prompt := "1234567890123456"
 				reqs := make([]*fwksched.InferenceRequest, 0, 5)
 				for i := range 5 {
-					reqs = append(reqs, makeTokenRequest(fmt.Sprintf("r%d", i+1), prompt))
+					reqs = append(reqs, makeTokenRequest(fmt.Sprintf("r%d", i+1), 4))
 				}
 				return reqs
 			}(),
@@ -434,23 +431,22 @@ func TestDetector_TokenFilter(t *testing.T) {
 	endpointName := "token-filter-endpoint"
 	endpoints := []fwksched.Endpoint{newStubSchedulingEndpoint(reg, endpointName)}
 
-	// Drive 110 tokens (just below 120 burst limit) -> endpoint should pass filter
-	// "1234567890123456" = 10 tokens. 11 requests = 110 tokens.
-	prompt := "1234567890123456"
+	// Drive 110 tokens (just below 120 burst limit) -> endpoint should pass filter.
+	// 4 input -> 10 total tokens per request * 11 requests = 110 tokens.
 	reqs := make([]*fwksched.InferenceRequest, 0, 11)
 	for i := range 11 {
-		reqs = append(reqs, makeTokenRequest(fmt.Sprintf("r%d", i+1), prompt))
+		reqs = append(reqs, makeTokenRequest(fmt.Sprintf("r%d", i+1), 4))
 	}
 	driveTokenLoad(ctx, reg, detector, endpointName, reqs)
 
-	kept := detector.Filter(ctx, nil, nil, endpoints)
+	kept := detector.Filter(ctx, nil, endpoints)
 	require.Len(t, kept, 1, "endpoint should pass filter below burst limit")
 
 	// Add one more request to reach 120 tokens -> filtered out
 	driveTokenLoad(ctx, reg, detector, endpointName, []*fwksched.InferenceRequest{
-		makeTokenRequest("r12", prompt),
+		makeTokenRequest("r12", 4),
 	})
-	kept = detector.Filter(ctx, nil, nil, endpoints)
+	kept = detector.Filter(ctx, nil, endpoints)
 	require.Len(t, kept, 0, "endpoint should be filtered at burst limit")
 }
 
@@ -466,7 +462,7 @@ func TestDetector_TokenLifecycle(t *testing.T) {
 	candidates := []datalayer.Endpoint{newFakeEndpoint(reg, endpointName)}
 	targetEndpoint := newStubSchedulingEndpoint(reg, endpointName)
 
-	req1 := makeTokenRequest("req1", "1234567890123456") // 10 tokens
+	req1 := makeTokenRequest("req1", 4) // 4 input -> 10 total tokens
 	simulatePreRequest(ctx, reg, req1, makeSchedulingResult(reg, endpointName))
 	require.InDelta(t, 0.1, detector.Saturation(ctx, candidates), 1e-6)
 
@@ -486,7 +482,7 @@ func TestDetector_TokenDeleteEndpoint(t *testing.T) {
 	endpointName := "token-delete-endpoint"
 	candidates := []datalayer.Endpoint{newFakeEndpoint(reg, endpointName)}
 
-	req := makeTokenRequest("req1", "1234567890123456")
+	req := makeTokenRequest("req1", 4) // 4 input -> 10 total tokens
 	simulatePreRequest(ctx, reg, req, makeSchedulingResult(reg, endpointName))
 	require.InDelta(t, 0.1, detector.Saturation(ctx, candidates), 1e-6)
 
@@ -536,6 +532,34 @@ func TestDetector_ConcurrencyStress(t *testing.T) {
 
 	wg.Wait()
 	require.Equal(t, int64(0), reg.get(fullID).Requests)
+}
+
+// TestDetector_NilMetadataEndpoint verifies that endpoints with nil metadata
+// are counted toward pool capacity with zero in-flight load, not skipped.
+func TestDetector_NilMetadataEndpoint(t *testing.T) {
+	t.Parallel()
+
+	detector := newDetector("test-detector", config{mode: modeRequests, maxConcurrency: 10}, logr.Discard())
+	ctx := context.Background()
+
+	t.Run("all_nil_metadata_returns_zero", func(t *testing.T) {
+		t.Parallel()
+		candidates := []datalayer.Endpoint{&nilMetadataEndpoint{}, &nilMetadataEndpoint{}}
+		got := detector.Saturation(ctx, candidates)
+		require.InDelta(t, 0.0, got, 1e-6, "endpoints with nil metadata should report zero saturation")
+	})
+
+	t.Run("mixed_nil_and_loaded", func(t *testing.T) {
+		t.Parallel()
+		reg := newLocalRegistry()
+		driveLoad(ctx, reg, detector, "loaded", 10)
+		candidates := []datalayer.Endpoint{
+			newFakeEndpoint(reg, "loaded"),
+			&nilMetadataEndpoint{},
+		}
+		got := detector.Saturation(ctx, candidates)
+		require.InDelta(t, 0.5, got, 1e-6, "10 inflight / (10+10) capacity = 0.5")
+	})
 }
 
 // --- Test Helpers & Mocks ---
@@ -667,11 +691,44 @@ func (f *liveSchedulingEndpoint) Keys() []string {
 func (f *liveSchedulingEndpoint) String() string                { return f.id }
 func (f *liveSchedulingEndpoint) Clone() datalayer.AttributeMap { return f }
 
-func makeTokenRequest(requestID, prompt string) *fwksched.InferenceRequest {
+// makeTokenRequest builds a request with inputTokens tokenized input tokens.
+// The estimator then derives total tokens as inputTokens * (1 + OutputRatio).
+func makeTokenRequest(requestID string, inputTokens int) *fwksched.InferenceRequest {
 	return &fwksched.InferenceRequest{
 		RequestID: requestID,
 		Body: &fwkrh.InferenceRequestBody{
-			Completions: &fwkrh.CompletionsRequest{Prompt: fwkrh.Prompt{Raw: prompt}},
+			TokenizedPrompt: &fwkrh.TokenizedPrompt{PerPromptTokens: [][]uint32{make([]uint32, inputTokens)}},
 		},
 	}
+}
+
+// nilMetadataEndpoint simulates a freshly registered endpoint whose metadata
+// has not been populated yet.
+type nilMetadataEndpoint struct{}
+
+func (e *nilMetadataEndpoint) GetMetadata() *datalayer.EndpointMetadata     { return nil }
+func (e *nilMetadataEndpoint) UpdateMetadata(m *datalayer.EndpointMetadata) {}
+func (e *nilMetadataEndpoint) GetAttributes() datalayer.AttributeMap        { return e }
+func (e *nilMetadataEndpoint) GetMetrics() *datalayer.Metrics               { return nil }
+func (e *nilMetadataEndpoint) UpdateMetrics(*datalayer.Metrics)             {}
+func (e *nilMetadataEndpoint) String() string                               { return "nil-metadata" }
+func (e *nilMetadataEndpoint) Get(string) (datalayer.Cloneable, bool)       { return nil, false }
+func (e *nilMetadataEndpoint) Put(string, datalayer.Cloneable)              {}
+func (e *nilMetadataEndpoint) Keys() []string                               { return nil }
+func (e *nilMetadataEndpoint) Clone() datalayer.AttributeMap                { return e }
+
+func TestDetector_NilEndpointInList(t *testing.T) {
+	t.Parallel()
+	cfg := config{mode: modeRequests, maxConcurrency: 10}
+	d := newDetector("nil-test", cfg, logr.Discard())
+
+	require.NotPanics(t, func() {
+		sat := d.Saturation(t.Context(), []datalayer.Endpoint{nil})
+		require.InDelta(t, 1.0, sat, 1e-9, "nil endpoint skipped, 0 capacity = fail closed")
+	})
+
+	require.NotPanics(t, func() {
+		filtered := d.Filter(t.Context(), nil, []fwksched.Endpoint{nil})
+		require.Empty(t, filtered, "nil endpoint should be skipped by filter")
+	})
 }

@@ -42,7 +42,7 @@ func TestModalityFilter_TextPathPassesAll(t *testing.T) {
 		Headers: map[string]string{common.EnvoyPathHeader: "/v1/chat/completions"},
 	}
 
-	result := f.Filter(context.Background(), nil, request, endpoints)
+	result := f.Filter(context.Background(), request, endpoints)
 	assert.Len(t, result, 2, "text path should pass all endpoints through unfiltered")
 }
 
@@ -58,7 +58,7 @@ func TestModalityFilter_AudioSpeechFiltersCorrectly(t *testing.T) {
 		Headers: map[string]string{common.EnvoyPathHeader: common.AudioSpeechPath},
 	}
 
-	result := f.Filter(context.Background(), nil, request, endpoints)
+	result := f.Filter(context.Background(), request, endpoints)
 	assert.Len(t, result, 2, "audio/speech should match omni-llm and autoregressive-tts endpoints")
 }
 
@@ -72,7 +72,7 @@ func TestModalityFilter_QueryParamsStripped(t *testing.T) {
 		Headers: map[string]string{common.EnvoyPathHeader: "/v1/audio/speech?model=tts-1"},
 	}
 
-	result := f.Filter(context.Background(), nil, request, endpoints)
+	result := f.Filter(context.Background(), request, endpoints)
 	assert.Len(t, result, 1, "should filter correctly even with query params")
 }
 
@@ -85,7 +85,7 @@ func TestModalityFilter_EmptyPath(t *testing.T) {
 		Headers: map[string]string{},
 	}
 
-	result := f.Filter(context.Background(), nil, request, endpoints)
+	result := f.Filter(context.Background(), request, endpoints)
 	assert.Len(t, result, 1, "empty path should pass all endpoints (unknown path = no filtering)")
 }
 
@@ -100,6 +100,6 @@ func TestModalityFilter_ImagesGenerationsFiltersDiffusion(t *testing.T) {
 		Headers: map[string]string{common.EnvoyPathHeader: common.ImagesGenerationsPath},
 	}
 
-	result := f.Filter(context.Background(), nil, request, endpoints)
+	result := f.Filter(context.Background(), request, endpoints)
 	assert.Len(t, result, 1, "images/generations should match only diffusion endpoints")
 }

@@ -18,7 +18,6 @@ package fairness
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -47,7 +46,7 @@ func TestFairnessPolicyConformance(t *testing.T) {
 			t.Parallel()
 
 			// We pass nil for the handle as our core policies (RoundRobin, GlobalStrict) do not depend on it.
-			plugin, err := f(name, json.RawMessage{}, nil)
+			plugin, err := f(name, fwkplugin.StrictDecoder(nil), nil)
 			require.NoError(t, err, "Factory failed for plugin %s", name)
 			require.NotNil(t, plugin, "Factory returned nil for plugin %s", name)
 
@@ -76,9 +75,9 @@ func runPickConformanceTests(t *testing.T, policy flowcontrol.FairnessPolicy) {
 
 	flowIDEmpty := "flow-empty"
 	mockQueueEmpty := &fwkfcmocks.MockFlowQueueAccessor{
-		LenV:      0,
-		PeekHeadV: nil,
-		FlowKeyV:  flowcontrol.FlowKey{ID: flowIDEmpty},
+		LenV:     0,
+		PeekV:    nil,
+		FlowKeyV: flowcontrol.FlowKey{ID: flowIDEmpty},
 	}
 
 	testCases := []struct {

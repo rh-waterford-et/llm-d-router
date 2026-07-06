@@ -35,7 +35,7 @@ func TestTTSScorer_EmptyQueueGetsHighScore(t *testing.T) {
 		}, nil),
 	}
 
-	scores := s.Score(context.Background(), nil, nil, endpoints)
+	scores := s.Score(context.Background(), nil, endpoints)
 	score := scores[endpoints[0]]
 	// 0.7 * 1.0 + 0.3 * 0.8 = 0.94
 	assert.InDelta(t, 0.94, score, 0.01, "idle endpoint should score ~0.94")
@@ -50,7 +50,7 @@ func TestTTSScorer_FullQueueGetsLowScore(t *testing.T) {
 		}, nil),
 	}
 
-	scores := s.Score(context.Background(), nil, nil, endpoints)
+	scores := s.Score(context.Background(), nil, endpoints)
 	score := scores[endpoints[0]]
 	// 0.7 * 0.0 + 0.3 * 0.1 = 0.03
 	assert.InDelta(t, 0.03, score, 0.01, "saturated endpoint should score ~0.03")
@@ -69,7 +69,7 @@ func TestTTSScorer_PrefersLeastLoaded(t *testing.T) {
 		}, nil),
 	}
 
-	scores := s.Score(context.Background(), nil, nil, endpoints)
+	scores := s.Score(context.Background(), nil, endpoints)
 	assert.Greater(t, scores[endpoints[0]], scores[endpoints[1]],
 		"light endpoint should score higher than heavy endpoint")
 }
@@ -83,7 +83,7 @@ func TestTTSScorer_QueueAtThresholdGetsZeroQueueScore(t *testing.T) {
 		}, nil),
 	}
 
-	scores := s.Score(context.Background(), nil, nil, endpoints)
+	scores := s.Score(context.Background(), nil, endpoints)
 	score := scores[endpoints[0]]
 	// 0.7 * 0.0 + 0.3 * 1.0 = 0.3
 	assert.InDelta(t, 0.3, score, 0.01, "endpoint at queue threshold gets only GPU memory score")

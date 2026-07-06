@@ -17,12 +17,33 @@ limitations under the License.
 package plugin
 
 import (
+	"bytes"
 	"encoding/json"
 )
 
-// Factory is the definition of the factory functions that are used to instantiate plugins
-// specified in a configuration.
-type FactoryFunc func(name string, parameters json.RawMessage, handle Handle) (Plugin, error)
+// FactoryFunc is the definition of the factory functions that are used to instantiate plugins
+// specified in a configuration. The framework provides a strict decoder
+// (DisallowUnknownFields) over the plugin's raw parameters, or nil when the plugin was
+// instantiated without parameters (e.g., as a default producer). Factories that ignore
+// parameters can take the decoder as `_ *json.Decoder`.
+type FactoryFunc func(name string, parameters *json.Decoder, handle Handle) (Plugin, error)
+
+// ConfigParserFunc is the definition of the factory functions that are used to parse the
+// parameters of plugins that have been registered as having dependencies on other plugins
+type ConfigParserFunc func(parameters *json.Decoder, handle Handle) (any, error)
+
+// StrictDecoder returns a *json.Decoder configured with DisallowUnknownFields over the
+// given raw plugin parameters, or nil when raw is empty. The framework uses this when
+// invoking factories so each plugin gets uniform strict parsing; tests use it to
+// construct factory arguments without duplicating the decoder boilerplate.
+func StrictDecoder(raw json.RawMessage) *json.Decoder {
+	if len(raw) == 0 {
+		return nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	return dec
+}
 
 // Register is a static function that can be called to register plugin factory functions.
 func Register(pluginType string, factory FactoryFunc) {
@@ -38,9 +59,19 @@ func RegisterAsDefaultProducer(pluginType string, factory FactoryFunc, key DataK
 	DefaultProducerRegistry[key.String()] = pluginType
 }
 
+// RegisterWithPluginDependencies registers a factory for the given plugin type and records it as dependent on
+// other plugins referenced in the configuration struct returned by the plugin's configuration parser function.
+func RegisterWithPluginDependencies(pluginType string, factory FactoryFunc, parser ConfigParserFunc) {
+	Register(pluginType, factory)
+	PluginsWithPluginDependencies[pluginType] = parser
+}
+
 // Registry is a mapping from plugin type to Factory function.
 var Registry = map[string]FactoryFunc{}
 
 // DefaultProducerRegistry maps a data key to the default producer plugin name (same as type).
 // Populated via RegisterAsDefaultProducer.
 var DefaultProducerRegistry = map[string]string{}
+
+// PluginsWithPluginDependencies maps plugin types to their configuration parser function, used to determine plugin dependencies
+var PluginsWithPluginDependencies = map[string]ConfigParserFunc{}

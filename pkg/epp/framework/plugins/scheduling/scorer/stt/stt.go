@@ -44,10 +44,10 @@ type sttScorerParameters struct {
 var _ fwksched.Scorer = &STTScorer{}
 
 // STTScorerFactory defines the factory function for the STTScorer.
-func STTScorerFactory(name string, rawParameters json.RawMessage, handle fwkplugin.Handle) (fwkplugin.Plugin, error) {
+func STTScorerFactory(name string, params *json.Decoder, handle fwkplugin.Handle) (fwkplugin.Plugin, error) {
 	parameters := sttScorerParameters{QueueThreshold: STTQueueThresholdDefault}
-	if rawParameters != nil {
-		if err := json.Unmarshal(rawParameters, &parameters); err != nil {
+	if params != nil {
+		if err := params.Decode(&parameters); err != nil {
 			return nil, fmt.Errorf("failed to parse the parameters of the '%s' scorer - %w", STTScorerType, err)
 		}
 	}
@@ -103,7 +103,7 @@ func (s *STTScorer) Consumes() map[string]any {
 // Score scores endpoints for STT workloads. Encoder-decoder models like Whisper
 // benefit most from encoder batching — endpoints with lower queue depth have
 // more headroom for batching incoming encoder work.
-func (s *STTScorer) Score(_ context.Context, _ *fwksched.CycleState, _ *fwksched.InferenceRequest, endpoints []fwksched.Endpoint) map[fwksched.Endpoint]float64 {
+func (s *STTScorer) Score(_ context.Context, _ *fwksched.InferenceRequest, endpoints []fwksched.Endpoint) map[fwksched.Endpoint]float64 {
 	scores := make(map[fwksched.Endpoint]float64, len(endpoints))
 
 	for _, ep := range endpoints {

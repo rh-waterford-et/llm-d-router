@@ -34,7 +34,7 @@ const (
 var _ scheduling.Filter = &ModalityFilter{}
 
 // ModalityFilterFactory defines the factory function for the ModalityFilter.
-func ModalityFilterFactory(name string, _ json.RawMessage, _ plugin.Handle) (plugin.Plugin, error) {
+func ModalityFilterFactory(name string, _ *json.Decoder, _ plugin.Handle) (plugin.Plugin, error) {
 	return NewModalityFilter().WithName(name), nil
 }
 
@@ -65,7 +65,7 @@ func (f *ModalityFilter) TypedName() plugin.TypedName {
 // Filter keeps only endpoints whose model-arch label matches the inferred
 // modality from the request path. If the path is not a known multimodal
 // endpoint, all endpoints pass through unfiltered (backward compatible).
-func (f *ModalityFilter) Filter(_ context.Context, _ *scheduling.CycleState, request *scheduling.InferenceRequest, endpoints []scheduling.Endpoint) []scheduling.Endpoint {
+func (f *ModalityFilter) Filter(_ context.Context, request *scheduling.InferenceRequest, endpoints []scheduling.Endpoint) []scheduling.Endpoint {
 	path := request.Headers[common.EnvoyPathHeader]
 
 	if idx := strings.IndexByte(path, '?'); idx >= 0 {

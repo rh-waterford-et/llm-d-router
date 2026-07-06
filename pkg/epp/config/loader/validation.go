@@ -19,11 +19,34 @@ package loader
 import (
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/util/sets"
 
 	configapi "github.com/llm-d/llm-d-router/apix/config/v1alpha1"
+	fwkplugin "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/plugin"
 )
+
+// validatePlugins validates the plugins section of the configuration file.
+func validatePlugins(configuredPlugins []configapi.PluginSpec) error {
+	pluginNames := sets.New[string]()
+	for _, spec := range configuredPlugins {
+		if spec.Type == "" {
+			return fmt.Errorf("plugin '%s' is missing a type", spec.Name)
+		}
+		if pluginNames.Has(spec.Name) {
+			return fmt.Errorf("duplicate plugin name '%s'", spec.Name)
+		}
+		pluginNames.Insert(spec.Name)
+
+		_, ok := fwkplugin.Registry[spec.Type]
+		if !ok {
+			return fmt.Errorf("plugin type '%s' is not registered", spec.Type)
+		}
+	}
+	return nil
+}
 
 // validateConfig performs a deep validation of the configuration integrity.
 // It checks relationships between profiles, plugins, and feature gates.
@@ -37,14 +60,36 @@ func validateConfig(cfg *configapi.EndpointPickerConfig) error {
 	if err := validateSaturationDetector(cfg); err != nil {
 		return fmt.Errorf("saturation detector validation failed: %w", err)
 	}
+	if err := validateParsers(cfg); err != nil {
+		return fmt.Errorf("parser validation failed: %w", err)
+	}
+	return nil
+}
+
+func validateParsers(cfg *configapi.EndpointPickerConfig) error {
+	if cfg.RequestHandler == nil || len(cfg.RequestHandler.Parsers) == 0 {
+		return nil
+	}
+
+	definedPlugins := sets.New[string]()
+	for _, p := range cfg.Plugins {
+		definedPlugins.Insert(p.Name)
+	}
+
+	for _, pc := range cfg.RequestHandler.Parsers {
+		if !definedPlugins.Has(pc.PluginRef) {
+			return fmt.Errorf("parser references undefined plugin '%s'", pc.PluginRef)
+		}
+	}
+
 	return nil
 }
 
 func validateSaturationDetector(cfg *configapi.EndpointPickerConfig) error {
-	if cfg.SaturationDetector == nil {
+	if cfg.FlowControl == nil || cfg.FlowControl.SaturationDetector == nil {
 		return nil
 	}
-	if cfg.SaturationDetector.PluginRef == "" {
+	if cfg.FlowControl.SaturationDetector.PluginRef == "" {
 		return errors.New("saturation detector plugin reference is empty")
 	}
 
@@ -53,8 +98,8 @@ func validateSaturationDetector(cfg *configapi.EndpointPickerConfig) error {
 		definedPlugins.Insert(p.Name)
 	}
 
-	if !definedPlugins.Has(cfg.SaturationDetector.PluginRef) {
-		return fmt.Errorf("saturation detector references undefined plugin '%s'", cfg.SaturationDetector.PluginRef)
+	if !definedPlugins.Has(cfg.FlowControl.SaturationDetector.PluginRef) {
+		return fmt.Errorf("saturation detector references undefined plugin '%s'", cfg.FlowControl.SaturationDetector.PluginRef)
 	}
 
 	return nil
@@ -98,8 +143,15 @@ func validateFeatureGates(gates configapi.FeatureGates) error {
 	registeredFeatureGatesMu.RLock()
 	defer registeredFeatureGatesMu.RUnlock()
 	for _, gate := range gates {
-		if !registeredFeatureGates.Has(gate) {
-			return fmt.Errorf("feature gate '%s' is unknown or unregistered", gate)
+		parts := strings.Split(gate, "=")
+		if _, ok := registeredFeatureGates[parts[0]]; !ok {
+			return fmt.Errorf("feature gate '%s' is unknown or unregistered", parts[0])
+		}
+		if len(parts) > 1 {
+			_, err := strconv.ParseBool(strings.ToLower(strings.TrimSpace(parts[1])))
+			if err != nil {
+				return fmt.Errorf("%s is not a valid value for the feature gate %s (error: %w)", parts[1], parts[0], err)
+			}
 		}
 	}
 

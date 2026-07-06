@@ -21,7 +21,6 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"slices"
 
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -29,6 +28,7 @@ import (
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/interface/plugin"
 	fwkrc "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/requestcontrol"
 	fwksched "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/scheduling"
+	"github.com/llm-d/llm-d-router/pkg/epp/util"
 )
 
 // ValidateAndOrderDataDependencies validates that the data dependencies among the given plugins are acyclic
@@ -54,7 +54,7 @@ func ValidateAndOrderDataDependencies(plugins []plugin.Plugin) ([]string, error)
 		return nil, err
 	}
 	// Topologically sort the DAG to determine the order of plugin execution.
-	pluginNames, err := topologicalSort(dag)
+	pluginNames, err := util.TopologicalSort(dag)
 	if err != nil {
 		return nil, err
 	}
@@ -62,16 +62,89 @@ func ValidateAndOrderDataDependencies(plugins []plugin.Plugin) ([]string, error)
 	return pluginNames, nil
 }
 
-// CreateMissingDataProducers inspects the set of already-configured plugins,
-// finds data keys that are consumed but not yet produced, and auto-instantiates
-// the default DataProducer plugin for each such key using nil parameters.
-// defaultProducerRegistry maps a data key to the plugin type that is its default producer.
+// CreateMissingDataProducers inspects the configured plugins, finds data keys
+// that are consumed (Required) but not produced, and auto-instantiates the
+// default DataProducer for each using nil parameters. Resolution is transitive:
+// a producer created here may itself consume keys with registered defaults, so
+// creation repeats until no required key is missing or no further producer can
+// be added. defaultProducerRegistry maps a data key to its default producer type;
 // factoryRegistry maps a plugin type to its factory function.
-// Only entries whose type is not already present in plugins are considered.
 func CreateMissingDataProducers(ctx context.Context, defaultProducerRegistry map[string]string, factoryRegistry map[string]plugin.FactoryFunc, handle plugin.Handle) error {
 	logger := log.FromContext(ctx)
 
-	// Collect all keys already produced by existing plugins.
+	for {
+		producedKeys := producedKeySet(handle)
+
+		// Build the set of keys that are consumed but not yet produced.
+		missingKeys := make(map[string]string)
+		for _, p := range handle.GetAllPlugins() {
+			if consumer, ok := p.(plugin.ConsumerPlugin); ok {
+				for key := range consumer.Consumes().Required {
+					if !producedKeys[key.String()] {
+						missingKeys[key.String()] = consumer.TypedName().Name
+					}
+				}
+			}
+		}
+		if len(missingKeys) == 0 {
+			break
+		}
+
+		created := 0
+		for key, consumerName := range missingKeys {
+			defaultProducerNameOrType, ok := defaultProducerRegistry[key]
+			if !ok {
+				return fmt.Errorf("no default producer found for missing data key: %v, which is consumed by: %v", key, consumerName)
+			}
+			if handle.Plugin(defaultProducerNameOrType) != nil {
+				// Already created. This can happen when a producer produces multiple data keys.
+				continue
+			}
+			factory, ok := factoryRegistry[defaultProducerNameOrType]
+			if !ok {
+				return fmt.Errorf("factory not found for default producer: %v, this is required by datakey: %v, which is consumed by: %v", defaultProducerNameOrType, key, consumerName)
+			}
+			// pass nil params as this is default instantiation.
+			plg, err := factory(defaultProducerNameOrType, nil, handle)
+			if err != nil {
+				return fmt.Errorf("failed to instantiate data producer %q: %w, this is required by datakey: %v, which is consumed by: %v", defaultProducerNameOrType, err, key, consumerName)
+			}
+			if _, ok := plg.(plugin.ProducerPlugin); !ok {
+				return fmt.Errorf("auto-created default entry %q is not a ProducerPlugin, this is required by datakey: %v, which is consumed by: %v", defaultProducerNameOrType, key, consumerName)
+			}
+			handle.AddPlugin(plg.TypedName().Name, plg)
+			logger.Info("auto-created default producer",
+				"producer", plg.TypedName().String(),
+				"dataKey", key,
+				"consumer", consumerName)
+			created++
+		}
+		// No progress despite missing keys (every default already present): stop
+		// to avoid looping on a producer-name mismatch.
+		if created == 0 {
+			break
+		}
+	}
+
+	// Warn about optional keys that still lack a producer — no error.
+	producedKeys := producedKeySet(handle)
+	for _, p := range handle.GetAllPlugins() {
+		if consumer, ok := p.(plugin.ConsumerPlugin); ok {
+			for key := range consumer.Consumes().Optional {
+				if !producedKeys[key.String()] {
+					logger.Info("Warning: optional data key has no producer, plugin will use fallback",
+						"plugin", p.TypedName().Name, "dataKey", key.String())
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// producedKeySet returns the set of data-key strings produced by the plugins
+// currently registered on the handle.
+func producedKeySet(handle plugin.Handle) map[string]bool {
 	producedKeys := make(map[string]bool)
 	for _, p := range handle.GetAllPlugins() {
 		if producer, ok := p.(plugin.ProducerPlugin); ok {
@@ -80,46 +153,7 @@ func CreateMissingDataProducers(ctx context.Context, defaultProducerRegistry map
 			}
 		}
 	}
-
-	// Build the set of keys that are consumed but not yet produced.
-	missingKeys := make(map[string]string)
-	for _, p := range handle.GetAllPlugins() {
-		if consumer, ok := p.(plugin.ConsumerPlugin); ok {
-			for key := range consumer.Consumes() {
-				if !producedKeys[key.String()] {
-					missingKeys[key.String()] = consumer.TypedName().Name
-				}
-			}
-		}
-	}
-
-	logger.Info("Missing data keys", "missingKeys", missingKeys)
-
-	for key, consumerName := range missingKeys {
-		defaultProducerNameOrType, ok := defaultProducerRegistry[key]
-		if !ok {
-			return fmt.Errorf("no default producer found for missing data key: %v, which is consumed by: %v", key, consumerName)
-		}
-		if handle.Plugin(defaultProducerNameOrType) != nil {
-			// The plugin is already created. This can happen when a producer produces multiple data keys.
-			continue
-		}
-		factory, ok := factoryRegistry[defaultProducerNameOrType]
-		if !ok {
-			return fmt.Errorf("factory not found for default producer: %v, this is required by datakey: %v, which is consumed by: %v", defaultProducerNameOrType, key, consumerName)
-		}
-		// pass nil params as this is default instantiation.
-		plg, err := factory(defaultProducerNameOrType, nil, handle)
-		if err != nil {
-			return fmt.Errorf("failed to instantiate data producer %q: %w, this is required by datakey: %v, which is consumed by: %v", defaultProducerNameOrType, err, key, consumerName)
-		}
-		if _, ok := plg.(plugin.ProducerPlugin); !ok {
-			return fmt.Errorf("auto-created default entry %q is not a ProducerPlugin, this is required by datakey: %v, which is consumed by: %v", defaultProducerNameOrType, key, consumerName)
-		}
-		handle.AddPlugin(plg.TypedName().Name, plg)
-	}
-
-	return nil
+	return producedKeys
 }
 
 // Define constants for layer execution order. Lower value means earlier execution.
@@ -187,9 +221,10 @@ func buildDAG(producers map[string]plugin.ProducerPlugin, consumers map[string]p
 			if pName == cName {
 				continue
 			}
-			if producer.Produces() != nil && consumer.Consumes() != nil {
+			dependencies := consumer.Consumes()
+			if producer.Produces() != nil && dependencies.Required != nil {
 				for producedKey, producedData := range producer.Produces() {
-					if consumedData, ok := consumer.Consumes()[producedKey]; ok {
+					if consumedData, ok := dependencies.Required[producedKey]; ok {
 						// Check types are same.
 						if reflect.TypeOf(producedData) != reflect.TypeOf(consumedData) {
 							return nil, errors.New("data type mismatch between produced and consumed data for key: " + producedKey.String())
@@ -206,60 +241,4 @@ func buildDAG(producers map[string]plugin.ProducerPlugin, consumers map[string]p
 		}
 	}
 	return dag, nil
-}
-
-// TopologicalSort performs Kahn's Algorithm on a DAG.
-// It returns the sorted order or an error if a cycle is detected.
-func topologicalSort(graph map[string][]string) ([]string, error) {
-	// 1. Initialize in-degree map
-	inDegree := make(map[string]int)
-
-	// Ensure all nodes are present in the inDegree map, even those with no dependencies
-	for u, neighbors := range graph {
-		if _, ok := inDegree[u]; !ok {
-			inDegree[u] = 0
-		}
-		for _, v := range neighbors {
-			inDegree[v]++ // Increment in-degree for the destination node
-		}
-	}
-
-	// 2. Initialize the queue with nodes having 0 in-degree
-	var queue []string
-	for node, degree := range inDegree {
-		if degree == 0 {
-			queue = append(queue, node)
-		}
-	}
-
-	var result []string
-
-	// 3. Process the queue
-	for len(queue) > 0 {
-		// Dequeue
-		u := queue[0]
-		queue = queue[1:]
-
-		result = append(result, u)
-
-		// Decrease in-degree of neighbors
-		if neighbors, ok := graph[u]; ok {
-			for _, v := range neighbors {
-				inDegree[v]--
-				if inDegree[v] == 0 {
-					queue = append(queue, v)
-				}
-			}
-		}
-	}
-
-	// 4. Check for cycles
-	// If the result size != total nodes, there is a cycle
-	if len(result) != len(inDegree) {
-		return nil, errors.New("cycle detected: graph is not a DAG")
-	}
-
-	// Reverse to get the correct order since edges point from consumer to producer
-	slices.Reverse(result)
-	return result, nil
 }

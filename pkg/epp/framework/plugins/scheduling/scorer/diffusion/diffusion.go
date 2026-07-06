@@ -44,10 +44,10 @@ type diffusionScorerParameters struct {
 var _ fwksched.Scorer = &DiffusionScorer{}
 
 // DiffusionScorerFactory defines the factory function for the DiffusionScorer.
-func DiffusionScorerFactory(name string, rawParameters json.RawMessage, handle fwkplugin.Handle) (fwkplugin.Plugin, error) {
+func DiffusionScorerFactory(name string, params *json.Decoder, handle fwkplugin.Handle) (fwkplugin.Plugin, error) {
 	parameters := diffusionScorerParameters{QueueThreshold: DiffusionQueueThresholdDefault}
-	if rawParameters != nil {
-		if err := json.Unmarshal(rawParameters, &parameters); err != nil {
+	if params != nil {
+		if err := params.Decode(&parameters); err != nil {
 			return nil, fmt.Errorf("failed to parse the parameters of the '%s' scorer - %w", DiffusionScorerType, err)
 		}
 	}
@@ -103,7 +103,7 @@ func (s *DiffusionScorer) Consumes() map[string]any {
 // Score scores endpoints for diffusion model workloads. Diffusion models run
 // iterative denoising (20-50 steps per image) making them GPU-bound with long
 // execution times. Queue depth is the dominant signal.
-func (s *DiffusionScorer) Score(_ context.Context, _ *fwksched.CycleState, _ *fwksched.InferenceRequest, endpoints []fwksched.Endpoint) map[fwksched.Endpoint]float64 {
+func (s *DiffusionScorer) Score(_ context.Context, _ *fwksched.InferenceRequest, endpoints []fwksched.Endpoint) map[fwksched.Endpoint]float64 {
 	scores := make(map[fwksched.Endpoint]float64, len(endpoints))
 
 	for _, ep := range endpoints {

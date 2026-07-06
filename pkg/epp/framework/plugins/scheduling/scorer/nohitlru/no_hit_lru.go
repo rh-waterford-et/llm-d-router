@@ -33,6 +33,7 @@ const (
 var _ scheduling.Scorer = &NoHitLRU{}
 var _ requestcontrol.PreRequest = &NoHitLRU{}
 var _ plugin.ConsumerPlugin = &NoHitLRU{}
+var _ plugin.StateDumper = &NoHitLRU{}
 
 // Parameters defines the parameters for the NoHitLRU scorer.
 type Parameters struct {
@@ -60,10 +61,10 @@ func (c *coldRequestState) Clone() plugin.StateData {
 }
 
 // Factory defines the factory function for the NoHitLRU
-func Factory(name string, rawParameters json.RawMessage, handle plugin.Handle) (plugin.Plugin, error) {
+func Factory(name string, rawParameters *json.Decoder, handle plugin.Handle) (plugin.Plugin, error) {
 	parameters := Parameters{}
 	if rawParameters != nil {
-		if err := json.Unmarshal(rawParameters, &parameters); err != nil {
+		if err := rawParameters.Decode(&parameters); err != nil {
 			return nil, fmt.Errorf("failed to parse the parameters of the '%s' scorer - %w", NoHitLRUType, err)
 		}
 	}
@@ -122,9 +123,43 @@ func (s *NoHitLRU) Category() scheduling.ScorerCategory {
 	return scheduling.Distribution
 }
 
-func (s *NoHitLRU) Consumes() map[plugin.DataKey]any {
-	return map[plugin.DataKey]any{
-		s.dk: attrprefix.PrefixCacheMatchInfo{},
+const maxDebugDumpEndpoints = 100
+
+// noHitLRUState is the sanitized snapshot returned by DumpState: the endpoint
+// identities tracked in the cold-request LRU, nothing else. The dump is partial
+// when TotalEndpoints exceeds MaxEndpoints.
+type noHitLRUState struct {
+	Endpoints      []string `json:"endpoints"`
+	TotalEndpoints int      `json:"totalEndpoints"`
+	MaxEndpoints   int      `json:"maxEndpoints"`
+}
+
+// DumpState reports the endpoints currently tracked in the cold-request LRU,
+// ordered least-recently-used first (the order the scorer favors for the next
+// cold request) and capped to maxDebugDumpEndpoints so the payload stays bounded.
+// No extra lock is needed: lru.Cache is internally synchronized, so Keys() is
+// safe to call concurrently with PreRequest's Add().
+func (s *NoHitLRU) DumpState() (json.RawMessage, error) {
+	state := noHitLRUState{MaxEndpoints: maxDebugDumpEndpoints}
+	// A constructed scorer always has a cache; this guards zero-value use.
+	if s.lruCache == nil {
+		return json.Marshal(state)
+	}
+
+	// Keys returns a fresh slice, least-recently-used first, safe to truncate.
+	// https://pkg.go.dev/github.com/hashicorp/golang-lru/v2#Cache.Keys
+	keys := s.lruCache.Keys()
+	state.TotalEndpoints = len(keys)
+	if len(keys) > maxDebugDumpEndpoints {
+		keys = keys[:maxDebugDumpEndpoints]
+	}
+	state.Endpoints = keys
+	return json.Marshal(state)
+}
+
+func (s *NoHitLRU) Consumes() plugin.DataDependencies {
+	return plugin.DataDependencies{
+		Required: map[plugin.DataKey]any{s.dk: attrprefix.PrefixCacheMatchInfo{}},
 	}
 }
 
@@ -249,7 +284,7 @@ func (s *NoHitLRU) scoreColdRequestByLRU(endpoints []scheduling.Endpoint) map[sc
 // - LRU ordering is with respect to when a endpoint last received a cold request.
 // - Least recently used (or never used) endpoints get highest score (1.0)
 // - Most recently used endpoints get lowest score (approaching 0.0)
-func (s *NoHitLRU) Score(ctx context.Context, cycleState *scheduling.CycleState, request *scheduling.InferenceRequest, endpoints []scheduling.Endpoint) map[scheduling.Endpoint]float64 {
+func (s *NoHitLRU) Score(ctx context.Context, request *scheduling.InferenceRequest, endpoints []scheduling.Endpoint) map[scheduling.Endpoint]float64 {
 	logger := log.FromContext(ctx).V(logging.DEBUG)
 
 	isCold := s.isColdRequest(ctx, endpoints)

@@ -3,7 +3,9 @@ package nohitlru_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -55,6 +57,10 @@ func (h *fakeHandle) GetAllPluginsWithNames() map[string]plugin.Plugin {
 
 func (h *fakeHandle) PodList() []k8stypes.NamespacedName {
 	return make([]k8stypes.NamespacedName, 0)
+}
+
+func (h *fakeHandle) Metrics() plugin.MetricsRecorder {
+	return nil
 }
 
 type stubPlugin struct {
@@ -125,7 +131,7 @@ func TestNoHitLRUFactoryDependencyValidation(t *testing.T) {
 			raw = bytes
 		}
 
-		plugin, err := nohitlru.Factory("test", raw, tt.handle)
+		plugin, err := nohitlru.Factory("test", plugin.StrictDecoder(raw), tt.handle)
 		if tt.expectError {
 			if err == nil {
 				t.Fatalf("expected error for case %q, got none", tt.name)
@@ -212,7 +218,7 @@ func TestNoHitLRUScorer(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			eps := test.input()
 			want := test.wantScores(eps)
-			got := test.scorer.Score(utils.NewTestContext(t), &scheduling.CycleState{}, test.req, eps)
+			got := test.scorer.Score(utils.NewTestContext(t), test.req, eps)
 			if diff := cmp.Diff(want, got); diff != "" {
 				t.Errorf("%s: Unexpected output (-want +got): %v", test.description, diff)
 			}
@@ -229,7 +235,7 @@ func TestNoHitLRUBasicFunctionality(t *testing.T) {
 	endpoints := []scheduling.Endpoint{endpointA, endpointB}
 
 	// Cold request (no attributes): should not crash and should return valid scores.
-	scores := scorer.Score(ctx, &scheduling.CycleState{}, &scheduling.InferenceRequest{}, endpoints)
+	scores := scorer.Score(ctx, &scheduling.InferenceRequest{}, endpoints)
 
 	if len(scores) != 2 {
 		t.Errorf("Expected 2 scores, got %d", len(scores))
@@ -254,7 +260,7 @@ func TestNoPrefixCacheStateFound(t *testing.T) {
 	endpointA := newCold("pod-a")
 	endpoints := []scheduling.Endpoint{endpointA}
 
-	scores := scorer.Score(ctx, &scheduling.CycleState{}, &scheduling.InferenceRequest{}, endpoints)
+	scores := scorer.Score(ctx, &scheduling.InferenceRequest{}, endpoints)
 
 	if scores[endpointA] != 1.0 {
 		t.Errorf("No prefix cache attributes should result in cold request scoring (expected 1.0, got %f).", scores[endpointA])
@@ -299,7 +305,7 @@ func TestNoHitLRUPreferLeastRecentlyUsedAfterColdRequests(t *testing.T) {
 	assertHighestScoredPod := func(expectedEndpoint scheduling.Endpoint, testName string) {
 		t.Helper()
 		coldReq := &scheduling.InferenceRequest{RequestID: testName + "-scoring-check"}
-		scores := scorer.Score(ctx, &scheduling.CycleState{}, coldReq, endpoints)
+		scores := scorer.Score(ctx, coldReq, endpoints)
 
 		highestScore := -1.0
 		var highestEndpoint scheduling.Endpoint
@@ -321,14 +327,14 @@ func TestNoHitLRUPreferLeastRecentlyUsedAfterColdRequests(t *testing.T) {
 
 	t.Run("initial cold request seeds cache", func(_ *testing.T) {
 		coldReqA := &scheduling.InferenceRequest{RequestID: "cold-1"}
-		scorer.Score(ctx, &scheduling.CycleState{}, coldReqA, endpoints)
+		scorer.Score(ctx, coldReqA, endpoints)
 		scorer.PreRequest(ctx, coldReqA, requestToEndpoint(endpointA))
 		assertHighestScoredPod(endpointB, "after-endpointA-used")
 	})
 
 	t.Run("unused endpoints rank above existing ones", func(t *testing.T) {
 		coldReqCheck := &scheduling.InferenceRequest{RequestID: "cold-check"}
-		coldScores := scorer.Score(ctx, &scheduling.CycleState{}, coldReqCheck, endpoints)
+		coldScores := scorer.Score(ctx, coldReqCheck, endpoints)
 		if coldScores[endpointB] <= coldScores[endpointA] {
 			t.Fatalf("expected endpoint-b to outrank endpoint-a after endpoint-a handled previous cold request, scores=%+v", coldScores)
 		}
@@ -342,7 +348,7 @@ func TestNoHitLRUPreferLeastRecentlyUsedAfterColdRequests(t *testing.T) {
 
 	t.Run("warm request leaves LRU untouched", func(t *testing.T) {
 		warmReq := &scheduling.InferenceRequest{RequestID: "warm-1"}
-		warmScores := scorer.Score(ctx, &scheduling.CycleState{}, warmReq, warmEndpoints())
+		warmScores := scorer.Score(ctx, warmReq, warmEndpoints())
 		for _, score := range warmScores {
 			if score != 0.5 {
 				t.Fatalf("expected neutral score for warm request, got %f", score)
@@ -350,7 +356,7 @@ func TestNoHitLRUPreferLeastRecentlyUsedAfterColdRequests(t *testing.T) {
 		}
 		scorer.PreRequest(ctx, warmReq, requestToEndpoint(endpointB))
 		postWarmReq := &scheduling.InferenceRequest{RequestID: "cold-after-warm"}
-		postWarmScores := scorer.Score(ctx, &scheduling.CycleState{}, postWarmReq, endpoints)
+		postWarmScores := scorer.Score(ctx, postWarmReq, endpoints)
 		if postWarmScores[endpointB] <= postWarmScores[endpointA] {
 			t.Fatalf("expected warm request to leave ordering unchanged, scores=%+v", postWarmScores)
 		}
@@ -358,14 +364,14 @@ func TestNoHitLRUPreferLeastRecentlyUsedAfterColdRequests(t *testing.T) {
 
 	t.Run("second cold request rotates to endpointB", func(_ *testing.T) {
 		coldReqB := &scheduling.InferenceRequest{RequestID: "cold-2"}
-		scorer.Score(ctx, &scheduling.CycleState{}, coldReqB, endpoints)
+		scorer.Score(ctx, coldReqB, endpoints)
 		scorer.PreRequest(ctx, coldReqB, requestToEndpoint(endpointB))
 		assertHighestScoredPod(endpointC, "after-endpointB-used")
 	})
 
 	t.Run("third cold request rotates back to endpointA", func(_ *testing.T) {
 		coldReqC := &scheduling.InferenceRequest{RequestID: "cold-3"}
-		scorer.Score(ctx, &scheduling.CycleState{}, coldReqC, endpoints)
+		scorer.Score(ctx, coldReqC, endpoints)
 		scorer.PreRequest(ctx, coldReqC, requestToEndpoint(endpointC))
 		assertHighestScoredPod(endpointA, "after-endpointC-used")
 	})
@@ -377,14 +383,14 @@ func TestNoHitLRUEdgeCases(t *testing.T) {
 
 	t.Run("empty endpoints list", func(t *testing.T) {
 		emptyEndpoints := []scheduling.Endpoint{}
-		scores := scorer.Score(ctx, &scheduling.CycleState{}, &scheduling.InferenceRequest{}, emptyEndpoints)
+		scores := scorer.Score(ctx, &scheduling.InferenceRequest{}, emptyEndpoints)
 		if len(scores) != 0 {
 			t.Errorf("Expected empty scores for empty endpoints list, got %d scores", len(scores))
 		}
 	})
 
 	t.Run("nil endpoints list", func(t *testing.T) {
-		scores := scorer.Score(ctx, &scheduling.CycleState{}, &scheduling.InferenceRequest{}, nil)
+		scores := scorer.Score(ctx, &scheduling.InferenceRequest{}, nil)
 		if scores == nil {
 			t.Errorf("Expected non-nil scores map for nil endpoints list")
 		}
@@ -395,7 +401,7 @@ func TestNoHitLRUEdgeCases(t *testing.T) {
 
 	t.Run("single endpoint returns 1.0", func(t *testing.T) {
 		endpoints := []scheduling.Endpoint{newCold("pod-a")}
-		scores := scorer.Score(ctx, &scheduling.CycleState{}, &scheduling.InferenceRequest{}, endpoints)
+		scores := scorer.Score(ctx, &scheduling.InferenceRequest{}, endpoints)
 		if scores[endpoints[0]] != 1.0 {
 			t.Errorf("Expected single endpoint to get score 1.0, got %f", scores[endpoints[0]])
 		}
@@ -421,7 +427,7 @@ func TestNoHitLRUPrefillDecodeTracking(t *testing.T) {
 
 		// First cold request with P/D (no attributes = cold).
 		req1 := &scheduling.InferenceRequest{RequestID: "pd-request-1"}
-		scorer.Score(ctx, &scheduling.CycleState{}, req1, append(prefillEndpoints, decodeEndpoints...))
+		scorer.Score(ctx, req1, append(prefillEndpoints, decodeEndpoints...))
 
 		pdResult := &scheduling.SchedulingResult{
 			PrimaryProfileName: "decode",
@@ -437,8 +443,8 @@ func TestNoHitLRUPrefillDecodeTracking(t *testing.T) {
 		scorer.PreRequest(ctx, req1, pdResult)
 
 		req2 := &scheduling.InferenceRequest{RequestID: "pd-request-2"}
-		prefillScores := scorer.Score(ctx, &scheduling.CycleState{}, req2, prefillEndpoints)
-		decodeScores := scorer.Score(ctx, &scheduling.CycleState{}, req2, decodeEndpoints)
+		prefillScores := scorer.Score(ctx, req2, prefillEndpoints)
+		decodeScores := scorer.Score(ctx, req2, decodeEndpoints)
 
 		if prefillScores[prefillEndpointB] <= prefillScores[prefillEndpointA] {
 			t.Errorf("Expected prefill-b to score higher than prefill-a after prefill-a was used: %+v", prefillScores)
@@ -452,7 +458,7 @@ func TestNoHitLRUPrefillDecodeTracking(t *testing.T) {
 	t.Run("non-P/D scenario - only primary profile exists", func(t *testing.T) {
 		req := &scheduling.InferenceRequest{RequestID: "non-pd-request"}
 		scorer := nohitlru.NewNoHitLRU(ctx, nohitlru.NoHitLRUType, nil)
-		scorer.Score(ctx, &scheduling.CycleState{}, req, decodeEndpoints)
+		scorer.Score(ctx, req, decodeEndpoints)
 
 		result := &scheduling.SchedulingResult{
 			PrimaryProfileName: "decode",
@@ -465,7 +471,7 @@ func TestNoHitLRUPrefillDecodeTracking(t *testing.T) {
 		scorer.PreRequest(ctx, req, result)
 
 		req2 := &scheduling.InferenceRequest{RequestID: "non-pd-request-2"}
-		scores := scorer.Score(ctx, &scheduling.CycleState{}, req2, decodeEndpoints)
+		scores := scorer.Score(ctx, req2, decodeEndpoints)
 
 		if scores[decodeEndpointB] <= scores[decodeEndpointA] {
 			t.Errorf("Expected decode-b to score higher than decode-a: %+v", scores)
@@ -475,14 +481,14 @@ func TestNoHitLRUPrefillDecodeTracking(t *testing.T) {
 	t.Run("nil scheduling result - graceful handling", func(_ *testing.T) {
 		req := &scheduling.InferenceRequest{RequestID: "nil-result"}
 		scorer := nohitlru.NewNoHitLRU(ctx, nohitlru.NoHitLRUType, nil)
-		scorer.Score(ctx, &scheduling.CycleState{}, req, decodeEndpoints)
+		scorer.Score(ctx, req, decodeEndpoints)
 		scorer.PreRequest(ctx, req, nil)
 	})
 
 	t.Run("empty profile results - graceful handling", func(_ *testing.T) {
 		req := &scheduling.InferenceRequest{RequestID: "empty-results"}
 		scorer := nohitlru.NewNoHitLRU(ctx, nohitlru.NoHitLRUType, nil)
-		scorer.Score(ctx, &scheduling.CycleState{}, req, decodeEndpoints)
+		scorer.Score(ctx, req, decodeEndpoints)
 
 		result := &scheduling.SchedulingResult{
 			PrimaryProfileName: "decode",
@@ -490,4 +496,135 @@ func TestNoHitLRUPrefillDecodeTracking(t *testing.T) {
 		}
 		scorer.PreRequest(ctx, req, result)
 	})
+}
+
+// dumpedLRUState mirrors the unexported noHitLRUState; keep the JSON tags in sync.
+type dumpedLRUState struct {
+	Endpoints      []string `json:"endpoints"`
+	TotalEndpoints int      `json:"totalEndpoints"`
+	MaxEndpoints   int      `json:"maxEndpoints"`
+}
+
+// seedCold drives one cold request whose target is the given endpoint, which
+// adds the endpoint to the scorer's cold-request LRU. The RequestID must be
+// unique per call when reusing the same scorer.
+func seedCold(ctx context.Context, scorer *nohitlru.NoHitLRU, target scheduling.Endpoint, id string) {
+	req := &scheduling.InferenceRequest{RequestID: id}
+	scorer.Score(ctx, req, []scheduling.Endpoint{target})
+	scorer.PreRequest(ctx, req, &scheduling.SchedulingResult{
+		PrimaryProfileName: "p",
+		ProfileResults: map[string]*scheduling.ProfileRunResult{
+			"p": {TargetEndpoints: []scheduling.Endpoint{target}},
+		},
+	})
+}
+
+func dumpLRU(t *testing.T, scorer *nohitlru.NoHitLRU) dumpedLRUState {
+	t.Helper()
+	payload, err := scorer.DumpState()
+	if err != nil {
+		t.Fatalf("DumpState: %v", err)
+	}
+	if !json.Valid(payload) {
+		t.Fatalf("DumpState returned invalid JSON: %s", payload)
+	}
+	var state dumpedLRUState
+	if err := json.Unmarshal(payload, &state); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	return state
+}
+
+func TestDumpState(t *testing.T) {
+	ctx := utils.NewTestContext(t)
+	scorer := nohitlru.NewNoHitLRU(ctx, nohitlru.NoHitLRUType, nil)
+
+	seedCold(ctx, scorer, newColdNS("pod-a"), "cold-a")
+	seedCold(ctx, scorer, newColdNS("pod-b"), "cold-b")
+
+	state := dumpLRU(t, scorer)
+
+	// LRU order is least-recently-used first: pod-a was used before pod-b.
+	if diff := cmp.Diff([]string{"default/pod-a", "default/pod-b"}, state.Endpoints); diff != "" {
+		t.Errorf("endpoints mismatch (-want +got):\n%s", diff)
+	}
+	if state.TotalEndpoints != 2 {
+		t.Errorf("totalEndpoints = %d, want 2", state.TotalEndpoints)
+	}
+	if state.MaxEndpoints != 100 {
+		t.Errorf("maxEndpoints = %d, want 100", state.MaxEndpoints)
+	}
+	if state.TotalEndpoints > state.MaxEndpoints {
+		t.Errorf("dump unexpectedly partial: total %d > max %d", state.TotalEndpoints, state.MaxEndpoints)
+	}
+}
+
+func TestDumpStateCaps(t *testing.T) {
+	ctx := utils.NewTestContext(t)
+	scorer := nohitlru.NewNoHitLRU(ctx, nohitlru.NoHitLRUType, nil)
+
+	const total = 105 // greater than the 100-endpoint dump cap
+	for i := 0; i < total; i++ {
+		name := fmt.Sprintf("pod-%03d", i)
+		seedCold(ctx, scorer, newColdNS(name), name)
+	}
+
+	state := dumpLRU(t, scorer)
+
+	// The dump is partial: TotalEndpoints exceeds the returned count, capped at MaxEndpoints.
+	if state.TotalEndpoints <= state.MaxEndpoints {
+		t.Errorf("expected partial dump: total %d should exceed max %d", state.TotalEndpoints, state.MaxEndpoints)
+	}
+	if state.TotalEndpoints != total {
+		t.Errorf("totalEndpoints = %d, want %d", state.TotalEndpoints, total)
+	}
+	if len(state.Endpoints) != state.MaxEndpoints {
+		t.Errorf("len(endpoints) = %d, want %d", len(state.Endpoints), state.MaxEndpoints)
+	}
+	// LRU order keeps the least-recently-used (earliest-seeded) endpoints.
+	if state.Endpoints[0] != "default/pod-000" {
+		t.Errorf("endpoints[0] = %q, want default/pod-000", state.Endpoints[0])
+	}
+	if last := state.Endpoints[len(state.Endpoints)-1]; last != "default/pod-099" {
+		t.Errorf("endpoints[last] = %q, want default/pod-099", last)
+	}
+}
+
+func TestDumpStateEmpty(t *testing.T) {
+	ctx := utils.NewTestContext(t)
+
+	// Fresh scorer: empty LRU.
+	scorer := nohitlru.NewNoHitLRU(ctx, nohitlru.NoHitLRUType, nil)
+	if state := dumpLRU(t, scorer); state.TotalEndpoints != 0 || len(state.Endpoints) != 0 || state.MaxEndpoints != 100 {
+		t.Errorf("fresh scorer dump = %+v, want empty with maxEndpoints 100", state)
+	}
+
+	// Zero-value scorer: a nil LRU must not panic.
+	if state := dumpLRU(t, &nohitlru.NoHitLRU{}); state.TotalEndpoints != 0 || len(state.Endpoints) != 0 {
+		t.Errorf("zero-value scorer dump = %+v, want empty", state)
+	}
+}
+
+func TestDumpStateConcurrentWithPreRequest(t *testing.T) {
+	ctx := utils.NewTestContext(t)
+	scorer := nohitlru.NewNoHitLRU(ctx, nohitlru.NoHitLRUType, nil)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			name := fmt.Sprintf("pod-%03d", i)
+			seedCold(ctx, scorer, newColdNS(name), name)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			if _, err := scorer.DumpState(); err != nil {
+				t.Errorf("DumpState returned error: %v", err)
+			}
+		}
+	}()
+	wg.Wait()
 }
