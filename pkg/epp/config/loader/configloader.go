@@ -19,6 +19,8 @@ package loader
 import (
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/go-logr/logr"
@@ -46,8 +48,8 @@ import (
 var (
 	scheme                       = runtime.NewScheme()
 	registeredFeatureGatesMu     sync.RWMutex
-	registeredFeatureGates       = sets.New[string]()
-	deprecatedSchemeGroupVersion = schema.GroupVersion{Group: "inference.networking.x-k8s.io", Version: "v1alpha1"}
+	registeredFeatureGates       = make(map[string]bool)
+	deprecatedSchemeGroupVersion = schema.GroupVersion{Group: "inference.networking.x-k8s.io", Version: "v1alpha1"} // TODO: deprecated should be clean up
 )
 
 func init() {
@@ -68,10 +70,10 @@ func init() {
 }
 
 // RegisterFeatureGate registers a feature gate name for validation purposes.
-func RegisterFeatureGate(gate string) {
+func RegisterFeatureGate(gate string, isEnabledByDefault bool) {
 	registeredFeatureGatesMu.Lock()
 	defer registeredFeatureGatesMu.Unlock()
-	registeredFeatureGates.Insert(gate)
+	registeredFeatureGates[gate] = isEnabledByDefault
 }
 
 // LoadRawConfig parses the raw configuration bytes, applies initial defaults, and extracts feature gates.
@@ -90,6 +92,34 @@ func LoadRawConfig(configBytes []byte, logger logr.Logger) (*configapi.EndpointP
 				"replacement", "llm-d.ai/v1alpha1/EndpointPickerConfig")
 		}
 
+		//nolint:staticcheck // SA1019: rawConfig.SaturationDetector is deprecated: use flowControl.saturationDetector instead.
+		// If both are set, the new field is used. Tracked in https://github.com/llm-d/llm-d-router/issues/1308 (staticcheck)
+		if rawConfig.SaturationDetector != nil {
+			logger.Info("DEPRECATION: top-level saturationDetector is deprecated, use flowControl.saturationDetector instead. If both are set, the new field is used.")
+			if rawConfig.FlowControl == nil {
+				rawConfig.FlowControl = &configapi.FlowControlConfig{}
+			}
+			if rawConfig.FlowControl.SaturationDetector == nil {
+				//nolint:staticcheck // SA1019: rawConfig.SaturationDetector is deprecated: use flowControl.saturationDetector instead.
+				// If both are set, the new field is used. Tracked in https://github.com/llm-d/llm-d-router/issues/1308 (staticcheck)
+				rawConfig.FlowControl.SaturationDetector = rawConfig.SaturationDetector
+			}
+		}
+
+		//nolint:staticcheck // SA1019: rawConfig.Parser is deprecated: use requestHandler.parsers instead.
+		// If both are set, the new field is used. Tracked in https://github.com/llm-d/llm-d-router/issues/1308 (staticcheck)
+		if rawConfig.Parser != nil {
+			logger.Info("DEPRECATION: top-level parser is deprecated, use requestHandler.parsers instead. If both are set, the new field is used.")
+			if rawConfig.RequestHandler == nil {
+				rawConfig.RequestHandler = &configapi.RequestHandlerConfig{}
+			}
+			if len(rawConfig.RequestHandler.Parsers) == 0 {
+				//nolint:staticcheck // SA1019: rawConfig.Parser is deprecated: use requestHandler.parsers instead.
+				// If both are set, the new field is used. Tracked in https://github.com/llm-d/llm-d-router/issues/1308 (staticcheck)
+				rawConfig.RequestHandler.Parsers = []configapi.ParserConfig{*rawConfig.Parser}
+			}
+		}
+
 		logger.Info("Loaded raw configuration", "config", rawConfig.String())
 	} else {
 		logger.Info("A configuration wasn't specified. A default one is being used.")
@@ -104,7 +134,11 @@ func LoadRawConfig(configBytes []byte, logger logr.Logger) (*configapi.EndpointP
 		return nil, nil, fmt.Errorf("feature gate validation failed: %w", err)
 	}
 
-	featureConfig := loadFeatureConfig(rawConfig.FeatureGates)
+	featureConfig, err := loadFeatureConfig(rawConfig.FeatureGates)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to load feature gates: %w", err)
+	}
+
 	return rawConfig, featureConfig, nil
 }
 
@@ -134,40 +168,40 @@ func InstantiateAndConfigure(
 		return nil, fmt.Errorf("scheduler config build failed: %w", err)
 	}
 
-	featureGates := loadFeatureConfig(rawConfig.FeatureGates)
-	var dataConfig *datalayer.Config
-	if !featureGates[datalayer.EnableLegacyMetricsFeatureGate] {
-		var err error
-		dataConfig, err = buildDataLayerConfig(rawConfig.DataLayer, handle)
-		if err != nil {
-			return nil, fmt.Errorf("data layer config build failed: %w", err)
-		}
-		if len(dataConfig.Sources) == 0 {
-			logger.Info("No data sources configured; metrics collection is disabled")
-		}
+	featureGates, err := loadFeatureConfig(rawConfig.FeatureGates)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load feature gates: %w", err)
+	}
+
+	dataConfig, err := buildDataLayerConfig(rawConfig.DataLayer, handle)
+	if err != nil {
+		return nil, fmt.Errorf("data layer config build failed: %w", err)
+	}
+	if len(dataConfig.Sources) == 0 {
+		logger.Info("No data sources configured; metrics collection is disabled")
 	}
 
 	var flowControlConfig *flowcontrol.Config
 	if featureGates[flowcontrol.FeatureGate] {
 		var err error
-		flowControlConfig, err = flowcontrol.NewConfigFromAPI(rawConfig.FlowControl, handle)
+		flowControlConfig, err = buildFlowControlConfig(rawConfig.FlowControl, handle)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load flow control config: %w", err)
 		}
 	}
 
-	parserConfig, err := buildParserConfig(rawConfig.Parser, handle)
+	parserRegistry, err := buildParserRegistry(rawConfig.RequestHandler.Parsers, handle, logger)
 	if err != nil {
-		return nil, fmt.Errorf("parse config build failed: %w", err)
+		return nil, fmt.Errorf("parser registry build failed: %w", err)
 	}
 
-	plugin, ok := handle.GetAllPluginsWithNames()[rawConfig.SaturationDetector.PluginRef]
+	plugin, ok := handle.GetAllPluginsWithNames()[rawConfig.FlowControl.SaturationDetector.PluginRef]
 	if !ok {
-		return nil, fmt.Errorf("saturation detector plugin '%s' not found", rawConfig.SaturationDetector.PluginRef)
+		return nil, fmt.Errorf("saturation detector plugin '%s' not found", rawConfig.FlowControl.SaturationDetector.PluginRef)
 	}
 	saturationDetector, ok := plugin.(fwkfc.SaturationDetector)
 	if !ok {
-		return nil, fmt.Errorf("plugin '%s' is not a fwkfc.SaturationDetector", rawConfig.SaturationDetector.PluginRef)
+		return nil, fmt.Errorf("plugin '%s' is not a fwkfc.SaturationDetector", rawConfig.FlowControl.SaturationDetector.PluginRef)
 	}
 
 	return &config.Config{
@@ -175,7 +209,7 @@ func InstantiateAndConfigure(
 		SaturationDetector: saturationDetector,
 		DataConfig:         dataConfig,
 		FlowControlConfig:  flowControlConfig,
-		ParserConfig:       parserConfig,
+		ParserRegistry:     parserRegistry,
 	}, nil
 }
 
@@ -203,7 +237,7 @@ func instantiatePlugins(configuredPlugins []configapi.PluginSpec, handle fwkplug
 		if !ok {
 			return fmt.Errorf("plugin type '%s' is not registered", spec.Type)
 		}
-		plugin, err := factory(spec.Name, spec.Parameters, handle)
+		plugin, err := factory(spec.Name, fwkplugin.StrictDecoder(spec.Parameters), handle)
 		if err != nil {
 			return fmt.Errorf("failed to create plugin '%s' (type: %s): %w", spec.Name, spec.Type, err)
 		}
@@ -270,34 +304,46 @@ func buildSchedulerConfig(
 	return scheduling.NewSchedulerConfig(profileHandler, profiles), nil
 }
 
-func loadFeatureConfig(gates configapi.FeatureGates) map[string]bool {
+func loadFeatureConfig(gates configapi.FeatureGates) (map[string]bool, error) {
 	registeredFeatureGatesMu.RLock()
 	defer registeredFeatureGatesMu.RUnlock()
 	config := make(map[string]bool, len(registeredFeatureGates))
-	for gate := range registeredFeatureGates {
-		config[gate] = false
+	for gate, defaultValue := range registeredFeatureGates {
+		config[gate] = defaultValue
 	}
 	for _, gate := range gates {
-		config[gate] = true
+		value := true
+		parts := strings.Split(gate, "=")
+		if len(parts) > 1 {
+			var err error
+			value, err = strconv.ParseBool(strings.TrimSpace(strings.ToLower(parts[1])))
+			if err != nil {
+				return nil, err
+			}
+		}
+		config[parts[0]] = value
 	}
-	return config
+	return config, nil
 }
 
-func buildParserConfig(rawParserConfig *configapi.ParserConfig, handle fwkplugin.Handle) (*handlers.Config, error) {
-	if rawParserConfig == nil {
-		return nil, errors.New("parserConfig is not configured")
+func buildParserRegistry(rawParserConfigs []configapi.ParserConfig, handle fwkplugin.Handle, logger logr.Logger) (*handlers.ParserRegistry, error) {
+	if len(rawParserConfigs) == 0 {
+		return nil, errors.New("no parsers configured")
 	}
-	plugin, ok := handle.GetAllPluginsWithNames()[rawParserConfig.PluginRef]
-	if !ok {
-		return nil, errors.New("the configured parser is not loaded")
+	allPlugins := handle.GetAllPluginsWithNames()
+	parsers := make([]fwkrh.Parser, 0, len(rawParserConfigs))
+	for _, pc := range rawParserConfigs {
+		plugin, ok := allPlugins[pc.PluginRef]
+		if !ok {
+			return nil, fmt.Errorf("the configured parser %q is not loaded", pc.PluginRef)
+		}
+		v, ok := plugin.(fwkrh.Parser)
+		if !ok {
+			return nil, fmt.Errorf("the plugin %q is not a parser plugin", pc.PluginRef)
+		}
+		parsers = append(parsers, v)
 	}
-	v, ok := plugin.(fwkrh.Parser)
-	if !ok {
-		return nil, errors.New("the specified plugin is not a parser plugin in the config")
-	}
-	return &handlers.Config{
-		Parser: v,
-	}, nil
+	return handlers.NewParserRegistry(parsers, logger), nil
 }
 
 func buildDataLayerConfig(rawDataConfig *configapi.DataLayerConfig, handle fwkplugin.Handle) (*datalayer.Config, error) {
@@ -313,14 +359,14 @@ func buildDataLayerConfig(rawDataConfig *configapi.DataLayerConfig, handle fwkpl
 		if sourcePlugin, ok := handle.Plugin(source.PluginRef).(fwkdl.DataSource); ok {
 			sourceConfig := datalayer.DataSourceConfig{
 				Plugin:     sourcePlugin,
-				Extractors: []fwkdl.ExtractorBase{},
+				Extractors: []fwkplugin.Plugin{},
 			}
 			for _, extractor := range source.Extractors {
-				if extractorPlugin, ok := handle.Plugin(extractor.PluginRef).(fwkdl.ExtractorBase); ok {
-					sourceConfig.Extractors = append(sourceConfig.Extractors, extractorPlugin)
-				} else {
-					return nil, fmt.Errorf("the plugin %s is not a fwkdl.ExtractorBase", source.PluginRef)
+				extractorPlugin := handle.Plugin(extractor.PluginRef)
+				if extractorPlugin == nil {
+					return nil, fmt.Errorf("the plugin %s is not registered", extractor.PluginRef)
 				}
+				sourceConfig.Extractors = append(sourceConfig.Extractors, extractorPlugin)
 			}
 			cfg.Sources = append(cfg.Sources, sourceConfig)
 		} else {

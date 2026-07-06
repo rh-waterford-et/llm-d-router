@@ -20,6 +20,7 @@ import (
 	"context"
 	"maps"
 	"strconv"
+	"strings"
 	"time"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
@@ -47,20 +48,11 @@ func (s *StreamingServer) HandleRequestHeaders(ctx context.Context, reqCtx *Requ
 	}
 
 	for _, header := range req.RequestHeaders.Headers.Headers {
-		reqCtx.Request.Headers[header.Key] = envoy.GetHeaderValue(header)
-		switch header.Key {
-		case metadata.FlowFairnessIDKey:
-			reqCtx.FairnessID = reqCtx.Request.Headers[header.Key]
-		case metadata.ObjectiveKey:
-			reqCtx.ObjectiveKey = reqCtx.Request.Headers[header.Key]
-		case metadata.ModelNameRewriteKey:
-			reqCtx.TargetModelName = reqCtx.Request.Headers[header.Key]
-		}
+		reqCtx.Request.Headers[strings.ToLower(header.Key)] = envoy.GetHeaderValue(header)
 	}
 
-	if reqCtx.FairnessID == "" {
-		reqCtx.FairnessID = metadata.DefaultFairnessID
-	}
+	reqCtx.ObjectiveKey, _ = metadata.GetLowerCaseHeaderValue(reqCtx.Request.Headers, metadata.ObjectiveKey)
+	reqCtx.TargetModelName, _ = metadata.GetLowerCaseHeaderValue(reqCtx.Request.Headers, metadata.ModelNameRewriteKey)
 
 	return nil
 }

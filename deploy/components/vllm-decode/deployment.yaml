@@ -25,7 +25,6 @@ spec:
         imagePullPolicy: IfNotPresent
         args:
         - "--port=8000"
-        - "--vllm-port=8200"
         - "--secure-proxy=false"
         - "--data-parallel-size=${VLLM_DATA_PARALLEL_SIZE}"
         ports:
@@ -140,3 +139,4 @@ spec:
             fieldRef:
               apiVersion: v1
               fieldPath: metadata.namespace
+      volumes: []

@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package utils provides test utilities for the llm-d inference scheduler.
+// Package utils provides test utilities for the llm-d router.
 // DeleteObjects and getClientObject restore the function removed from
 // sigs.k8s.io/gateway-api-inference-extension/test/utils in v1.5.0.
 package utils
@@ -38,10 +38,13 @@ import (
 type TestConfig = igwtestutils.TestConfig
 
 var (
-	NewTestConfig      = igwtestutils.NewTestConfig
-	ApplyYAMLFile      = igwtestutils.ApplyYAMLFile
-	CreateObjsFromYaml = igwtestutils.CreateObjsFromYaml
-	ReadYaml           = igwtestutils.ReadYaml
+	NewTestConfig          = igwtestutils.NewTestConfig
+	ApplyYAMLFile          = igwtestutils.ApplyYAMLFile
+	CreateObjsFromYaml     = igwtestutils.CreateObjsFromYaml
+	CreateObjsWithVerifier = igwtestutils.CreateObjsWithVerifier
+	CreateUnstructuredObjs = igwtestutils.CreateUnstructuredObjs
+	ReadYaml               = igwtestutils.ReadYaml
+	EventuallyExists       = igwtestutils.EventuallyExists
 )
 
 // DeleteObjects deletes a set of Kubernetes objects in the form of kind/name.

@@ -19,6 +19,7 @@ package approximateprefix
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -31,12 +32,22 @@ import (
 	fwksched "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/scheduling"
 	attrprefix "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/datalayer/attribute/prefix"
 	approxprefixconstants "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/dataproducer/approximateprefix/constants"
-	"github.com/llm-d/llm-d-router/pkg/epp/metrics"
+	tokenproducer "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/dataproducer/tokenizer"
 )
 
 const (
 	ApproxPrefixCachePluginType = approxprefixconstants.ApproxPrefixCachePluginType
 )
+
+// minBlockSizeTokens is the floor applied to the block size returned by
+// GetBlockSize. The routing-side indexer keeps one LRU entry per (pod, block),
+// so very small block sizes cause gigabyte-scale memory growth at scale. 64
+// tokens is coarse enough to bound memory while still preserving useful
+// prefix-match signal. Defined as a var so tests in this package can lower it
+// to exercise prefix-match logic at small block sizes without leaking a knob
+// into the public configuration surface. See
+// https://github.com/llm-d/llm-d-router/issues/1158.
+var minBlockSizeTokens = 64
 
 var (
 	_ requestcontrol.DataProducer = &dataProducer{}
@@ -63,14 +74,22 @@ func (p *dataProducer) Produces() map[plugin.DataKey]any {
 	return map[plugin.DataKey]any{p.dk: attrprefix.PrefixCacheMatchInfo{}}
 }
 
+// Consumes declares the TokenizedPrompt dependency so the data-layer DAG orders
+// the token-producer before this producer runs and auto-creates one when none
+// is configured.
+func (p *dataProducer) Consumes() plugin.DataDependencies {
+	return plugin.DataDependencies{
+		Required: map[plugin.DataKey]any{tokenproducer.TokenizedPromptDataKey: fwksched.TokenizedPrompt{}},
+	}
+}
+
 // newDataProducer returns a new DataProducer plugin.
 func newDataProducer(ctx context.Context, name string, config config, handle plugin.Handle) (*dataProducer, error) {
 	log.FromContext(ctx).V(logutil.DEFAULT).Info("Prefix DataProducer initialized", "config", config)
 
-	//nolint:staticcheck // BlockSize is deprecated, but we check it here to provide a migration path for users.
-	if config.BlockSize > 0 && config.BlockSizeTokens <= 0 {
-		return nil, fmt.Errorf("invalid configuration: BlockSize (%d) is deprecated; please use BlockSizeTokens instead to define the cache block size in tokens", config.BlockSize)
-	}
+	// Note: 'blockSize' deprecation handling lives in ApproxPrefixCacheFactory so it
+	// applies to JSON-decoded configs uniformly with the strict-parsing policy (#1068).
+	// Direct callers of newDataProducer are expected to populate BlockSizeTokens.
 
 	if !config.AutoTune && config.BlockSizeTokens <= 0 {
 		return nil, fmt.Errorf("invalid configuration: BlockSizeTokens must be > 0 when AutoTune is disabled (current value: %d)", config.BlockSizeTokens)
@@ -78,7 +97,26 @@ func newDataProducer(ctx context.Context, name string, config config, handle plu
 	if config.MaxPrefixTokensToMatch < 0 {
 		return nil, fmt.Errorf("invalid configuration: MaxPrefixTokensToMatch must be >= 0 (current value: %d)", config.MaxPrefixTokensToMatch)
 	}
-	indexer := newIndexer(ctx, config.LRUCapacityPerServer)
+	if handle == nil {
+		return nil, errors.New("plugin handle is required")
+	}
+	if err := registerMetrics(handle.Metrics()); err != nil {
+		return nil, err
+	}
+	// Surface the override to the operator so a too-small configured value is
+	// not silently swallowed. The clamp itself happens at request time in
+	// GetBlockSize and applies uniformly across endpoint metric, autotune
+	// fallback, and manual configuration.
+	if config.BlockSizeTokens > 0 && config.BlockSizeTokens < minBlockSizeTokens {
+		log.FromContext(ctx).Info(
+			"WARNING: configured blockSizeTokens is below the recommended minimum, overriding it.",
+			"blockSizeTokens", config.BlockSizeTokens,
+			"minimum", minBlockSizeTokens,
+			"issue", "https://github.com/llm-d/llm-d-router/issues/1158",
+		)
+	}
+
+	indexer := newIndexer(ctx, config.LRUCapacityPerServer, name, ApproxPrefixCachePluginType)
 
 	p := &dataProducer{
 		typedName: plugin.TypedName{
@@ -141,22 +179,27 @@ func (p *dataProducer) Produce(ctx context.Context, request *fwksched.InferenceR
 	if p.config.MaxPrefixTokensToMatch > 0 && blockSize > 0 {
 		maxBlocks = p.config.MaxPrefixTokensToMatch / blockSize
 	}
-	hashes := hashPrompt(ctx, request, blockSize, maxBlocks)
-	total := len(hashes)
-	prefixCacheServers := p.matchLongestPrefix(ctx, hashes)
+	perPromptHashes := getBlockHashes(ctx, request, blockSize, maxBlocks)
+
+	prefixCacheServers := make(map[ServerID]int)
+	totalBlocks := 0
+	for _, hashes := range perPromptHashes {
+		for server, matchLen := range p.matchLongestPrefix(ctx, hashes) {
+			prefixCacheServers[server] += matchLen
+		}
+		totalBlocks += len(hashes)
+	}
 
 	for _, pod := range pods {
 		matchLen := prefixCacheServers[ServerID(pod.GetMetadata().NamespacedName)]
-		pod.Put(p.dk.String(), attrprefix.NewPrefixCacheMatchInfo(matchLen, total, blockSize))
+		pod.Put(p.dk.String(), attrprefix.NewPrefixCacheMatchInfo(matchLen, totalBlocks, blockSize))
 	}
 
 	state := &SchedulingContextState{
-		PrefixHashes:       hashes,
+		PerPromptHashes:    perPromptHashes,
 		PrefixCacheServers: prefixCacheServers,
 	}
 
-	// Store the state in shared plugin state for later use in PreRequest.
-	// NOTE: We use the prefix plugin's name as part of the key so that multiple instances avoid collisions.
 	p.pluginState.Write(request.RequestID, plugin.StateKey(p.typedName.Name), state)
 
 	return nil
@@ -190,22 +233,29 @@ func (p *dataProducer) PreRequest(ctx context.Context, request *fwksched.Inferen
 	// Update indexer asynchronously to avoid blocking the request path.
 	p.wg.Go(func() {
 		for _, s := range servers {
-			p.indexerInst.Add(state.PrefixHashes, s)
+			for _, hashes := range state.PerPromptHashes {
+				p.indexerInst.Add(hashes, s)
+			}
 		}
 	})
 
-	// Record metrics.
-	total := len(state.PrefixHashes)
+	// Record metrics. Lengths are reported as a byte estimate (~averageCharactersPerToken bytes/token).
+	total := 0
+	for _, hashes := range state.PerPromptHashes {
+		total += len(hashes)
+	}
 	matchLen := state.PrefixCacheServers[ServerID(targetEndpoint.GetMetadata().NamespacedName)]
 	blockSize := p.GetBlockSize(primaryProfileResult.TargetEndpoints)
-	avgChars := averageCharactersPerToken
-	metrics.RecordPrefixCacheMatch(matchLen*blockSize*avgChars, total*blockSize*avgChars)
+	const averageCharactersPerToken = 4
+	recordPrefixCacheMatch(p.typedName.Name, p.typedName.Type, matchLen*blockSize*averageCharactersPerToken, total*blockSize*averageCharactersPerToken)
 }
 
 func (p *dataProducer) makeserver(targetEndpoint fwksched.Endpoint) server {
 	gpuBlocks := defaultLRUCapacityPerServer
-	if p.config.AutoTune && targetEndpoint.GetMetrics().CacheNumBlocks > 0 {
+	if p.config.AutoTune && targetEndpoint.GetMetrics() != nil && targetEndpoint.GetMetrics().CacheNumBlocks > 0 {
 		gpuBlocks = targetEndpoint.GetMetrics().CacheNumBlocks
+	} else if p.config.LRUCapacityPerServer > 0 {
+		gpuBlocks = p.config.LRUCapacityPerServer
 	}
 	return server{
 		ServerID:       ServerID(targetEndpoint.GetMetadata().NamespacedName),
@@ -233,27 +283,52 @@ func (p *dataProducer) matchLongestPrefix(ctx context.Context, hashes []blockHas
 }
 
 // GetBlockSize returns the block size in tokens, potentially auto-tuned from endpoint metrics.
+//
+// Values below minBlockSizeTokens are overridden with minBlockSizeTokens
+// regardless of where they originate (endpoint metric, autotune fallback, or
+// manual configuration). The routing-side indexer holds one LRU entry per
+// (pod, block), so a small block size (e.g., vLLM's default of 16) would
+// inflate indexer memory by ~64x. Routing intentionally measures matches at
+// coarser granularity than the model server's true block size; a startup
+// warning is logged in newDataProducer when a configured value triggers the
+// override. See #1158.
 func (p *dataProducer) GetBlockSize(endpoints []fwksched.Endpoint) int {
-	if !p.config.AutoTune || len(endpoints) == 0 {
-		return p.config.BlockSizeTokens
-	}
-
-	if endpoint := endpoints[0]; endpoint.GetMetrics() != nil {
-		cacheBlockSize := endpoint.GetMetrics().CacheBlockSize
-		if cacheBlockSize > 0 {
-			return cacheBlockSize
+	blockSize := p.config.BlockSizeTokens
+	if p.config.AutoTune && len(endpoints) > 0 {
+		if endpoint := endpoints[0]; endpoint.GetMetrics() != nil {
+			if metric := endpoint.GetMetrics().CacheBlockSize; metric > 0 {
+				blockSize = metric
+			}
 		}
 	}
-	return p.config.BlockSizeTokens
+	if blockSize < minBlockSizeTokens {
+		return minBlockSizeTokens
+	}
+	return blockSize
 }
 
 // ApproxPrefixCacheFactory is the factory function for the prefix cache data producer plugin.
-func ApproxPrefixCacheFactory(name string, rawParameters json.RawMessage, handle plugin.Handle) (plugin.Plugin, error) {
+func ApproxPrefixCacheFactory(name string, rawParameters *json.Decoder, handle plugin.Handle) (plugin.Plugin, error) {
 	parameters := defaultConfig
 	if rawParameters != nil {
-		if err := json.Unmarshal(rawParameters, &parameters); err != nil {
+		if err := rawParameters.Decode(&parameters); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal prefix cache parameters: %w", err)
 		}
+	}
+
+	// Deprecated 'blockSize' is accepted with a warning and mapped to
+	// 'blockSizeTokens'. Removed (truly unknown) fields are rejected by the
+	// strict decoder above. See #1068.
+	if parameters.BlockSize > 0 {
+		log.FromContext(handle.Context()).V(logutil.DEFAULT).Info(
+			"'blockSize' is deprecated; use 'blockSizeTokens' instead",
+			"blockSize", parameters.BlockSize,
+		)
+		if parameters.BlockSizeTokens == defaultBlockSizeTokens {
+			// BlockSizeTokens left at its default — map the deprecated value into it.
+			parameters.BlockSizeTokens = parameters.BlockSize
+		}
+		parameters.BlockSize = 0
 	}
 
 	// pluginState will be initialized by newDataProducer as we pass nil here.

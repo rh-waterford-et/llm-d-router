@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"k8s.io/utils/ptr"
 	v1 "sigs.k8s.io/gateway-api-inference-extension/api/v1"
 
 	fwkplugin "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/plugin"
@@ -157,6 +158,163 @@ func TestOpenAIParser_ParseRequest(t *testing.T) {
 						},
 						map[string]any{
 							"role": "user", "content": "hello",
+						},
+					},
+				},
+			},
+		},
+		{
+			name:    "chat completions request body with assistant tool calls",
+			headers: map[string]string{":path": "/v1/chat/completions"},
+			body: map[string]any{
+				"model": "test",
+				"messages": []any{
+					map[string]any{
+						"role":    "user",
+						"content": "List files",
+					},
+					map[string]any{
+						"role":    "assistant",
+						"content": "Reflection.",
+						"tool_calls": []any{
+							map[string]any{
+								"id":   "chatcmpl-tool-1",
+								"type": "function",
+								"function": map[string]any{
+									"name":      "bash",
+									"arguments": `{"command":"ls -la"}`,
+								},
+							},
+						},
+					},
+				},
+			},
+			want: &fwkrh.InferenceRequestBody{
+				ChatCompletions: &fwkrh.ChatCompletionsRequest{
+					Messages: []fwkrh.Message{
+						{Role: "user", Content: fwkrh.Content{Raw: "List files"}},
+						{
+							Role:    "assistant",
+							Content: fwkrh.Content{Raw: "Reflection."},
+							ToolCalls: []any{
+								map[string]any{
+									"id":   "chatcmpl-tool-1",
+									"type": "function",
+									"function": map[string]any{
+										"name":      "bash",
+										"arguments": `{"command":"ls -la"}`,
+									},
+								},
+							},
+						},
+					},
+				},
+				Payload: fwkrh.PayloadMap{
+					"model": "test",
+					"messages": []any{
+						map[string]any{"role": "user", "content": "List files"},
+						map[string]any{
+							"role":    "assistant",
+							"content": "Reflection.",
+							"tool_calls": []any{
+								map[string]any{
+									"id":   "chatcmpl-tool-1",
+									"type": "function",
+									"function": map[string]any{
+										"name":      "bash",
+										"arguments": `{"command":"ls -la"}`,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name:    "chat completions render sub-path",
+			headers: map[string]string{":path": "/v1/chat/completions/render"},
+			body: map[string]any{
+				"model":    "test",
+				"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+			},
+			want: &fwkrh.InferenceRequestBody{
+				ChatCompletions: &fwkrh.ChatCompletionsRequest{
+					Messages: []fwkrh.Message{{Role: "user", Content: fwkrh.Content{Raw: "hi"}}},
+				},
+				Payload: fwkrh.PayloadMap{
+					"model":    "test",
+					"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+				},
+			},
+		},
+		{
+			name:    "chat completions render sub-path with trailing slash",
+			headers: map[string]string{":path": "/v1/chat/completions/render/"},
+			body: map[string]any{
+				"model":    "test",
+				"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+			},
+			want: &fwkrh.InferenceRequestBody{
+				ChatCompletions: &fwkrh.ChatCompletionsRequest{
+					Messages: []fwkrh.Message{{Role: "user", Content: fwkrh.Content{Raw: "hi"}}},
+				},
+				Payload: fwkrh.PayloadMap{
+					"model":    "test",
+					"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+				},
+			},
+		},
+		{
+			name:    "completions render sub-path",
+			headers: map[string]string{":path": "/v1/completions/render"},
+			body: map[string]any{
+				"model":  "test",
+				"prompt": "render this",
+			},
+			want: &fwkrh.InferenceRequestBody{
+				Completions: &fwkrh.CompletionsRequest{
+					Prompt: fwkrh.Prompt{Raw: "render this"},
+				},
+				Payload: fwkrh.PayloadMap{
+					"model":  "test",
+					"prompt": "render this",
+				},
+			},
+		},
+		{
+			name:    "chat completions render sub-path with multimodal content",
+			headers: map[string]string{":path": "/v1/chat/completions/render"},
+			body: map[string]any{
+				"model": "test",
+				"messages": []any{
+					map[string]any{
+						"role": "user",
+						"content": []any{
+							map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,abc"}},
+							map[string]any{"type": "text", "text": "describe"},
+						},
+					},
+				},
+			},
+			want: &fwkrh.InferenceRequestBody{
+				ChatCompletions: &fwkrh.ChatCompletionsRequest{
+					Messages: []fwkrh.Message{
+						{Role: "user", Content: fwkrh.Content{Structured: []fwkrh.ContentBlock{
+							{Type: "image_url", ImageURL: fwkrh.ImageBlock{URL: "data:image/png;base64,abc"}},
+							{Type: "text", Text: "describe"},
+						}}},
+					},
+				},
+				Payload: fwkrh.PayloadMap{
+					"model": "test",
+					"messages": []any{
+						map[string]any{
+							"role": "user",
+							"content": []any{
+								map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,abc"}},
+								map[string]any{"type": "text", "text": "describe"},
+							},
 						},
 					},
 				},
@@ -809,8 +967,8 @@ func TestOpenAIParser_ParseRequest(t *testing.T) {
 				return
 			}
 
-			if got.Skip != false {
-				t.Errorf("ParseRequest() got.Skip = %v, want false", got.Skip)
+			if got.SkipResponseProcessing != false {
+				t.Errorf("ParseRequest() got.SkipResponseProcessing = %v, want false", got.SkipResponseProcessing)
 			}
 
 			if diff := cmp.Diff(tt.want, got.Body); diff != "" {
@@ -866,14 +1024,38 @@ func TestOpenAIParser_ParseResponse(t *testing.T) {
 			},
 		},
 		{
-			name: "Full Usage with Cached Token details",
+			name: "Full usage with standard cached token details",
 			body: []byte(`{
-				"object": "chat.completion",
+					"object": "chat.completion",
+					"usage": {
+						"prompt_tokens": 100,
+						"completion_tokens": 50,
+						"total_tokens": 150,
+						"prompt_tokens_details": {
+							"cached_tokens": 40
+						}
+					}
+			}`),
+			want: &fwkrh.ParsedResponse{
+				Usage: &fwkrh.Usage{
+					PromptTokens:     100,
+					CompletionTokens: 50,
+					TotalTokens:      150,
+					PromptTokenDetails: &fwkrh.PromptTokenDetails{
+						CachedTokens: 40,
+					},
+				},
+			},
+		},
+		{
+			name: "Responses API with cached input token details",
+			body: []byte(`{
+				"object": "response",
 				"usage": {
-					"prompt_tokens": 100,
-					"completion_tokens": 50,
+					"input_tokens": 100,
+					"output_tokens": 50,
 					"total_tokens": 150,
-					"prompt_token_details": {
+					"input_tokens_details": {
 						"cached_tokens": 40
 					}
 				}
@@ -955,7 +1137,7 @@ func TestOpenAIParser_ParseResponse_Streaming(t *testing.T) {
 		},
 		{
 			name:  "Usage and DONE in the same multi-line response",
-			chunk: []byte("data: {\"usage\":{\"prompt_tokens\":10,\"prompt_token_details\":{\"cached_tokens\":10}}}\ndata: [DONE]"),
+			chunk: []byte("data: {\"usage\":{\"prompt_tokens\":10,\"prompt_tokens_details\":{\"cached_tokens\":10}}}\ndata: [DONE]"),
 			want: &fwkrh.ParsedResponse{
 				Usage: &fwkrh.Usage{
 					PromptTokens: 10,
@@ -994,6 +1176,9 @@ func TestOpenAIParser_ParseResponse_Streaming(t *testing.T) {
 					PromptTokens:     31,
 					CompletionTokens: 3,
 					TotalTokens:      34,
+					PromptTokenDetails: &fwkrh.PromptTokenDetails{
+						CachedTokens: 16,
+					},
 				},
 			},
 		},
@@ -1030,13 +1215,24 @@ func TestOpenAIParser_ParseResponse_Streaming(t *testing.T) {
 	}
 }
 
-func TestOpenAIParser_SupportedAppProtocols(t *testing.T) {
+func TestOpenAIParser_Claims(t *testing.T) {
 	parser := NewOpenAIParser()
-	supported := parser.SupportedAppProtocols()
-	want := []v1.AppProtocol{v1.AppProtocolH2C, v1.AppProtocolHTTP}
+	got := parser.Claims()
+	want := fwkrh.Claims{
+		Paths: []string{
+			chatCompletionsAPI,
+			completionsAPI,
+			embeddingsAPI,
+			responsesAPI,
+			conversationsAPI,
+			chatCompletionsAPI + "/render",
+			completionsAPI + "/render",
+		},
+		Protocols: []v1.AppProtocol{v1.AppProtocolH2C, v1.AppProtocolHTTP},
+	}
 
-	if diff := cmp.Diff(want, supported); diff != "" {
-		t.Errorf("SupportedAppProtocols() mismatch (-want +got):\n%s", diff)
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("Claims() mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -1099,7 +1295,7 @@ func BenchmarkExtractRequestData_ChatCompletionsWithOptionals(b *testing.B) {
 		"add_generation_prompt":        true,
 		"chat_template_kwargs":         map[string]any{"key": "value"},
 	}
-	headers := map[string]string{":path": "/v1/chat/completions"}
+	apiType := determineAPITypeFromPath("/v1/chat/completions")
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -1107,7 +1303,7 @@ func BenchmarkExtractRequestData_ChatCompletionsWithOptionals(b *testing.B) {
 		if err != nil {
 			b.Errorf("body cannot be marshalled to JSON bytes")
 		}
-		_, err = extractRequestBody(jsonBytes, headers)
+		_, err = extractRequestBody(apiType, jsonBytes)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -1177,5 +1373,84 @@ func BenchmarkExtractRequestData_Embeddings(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+func TestOpenAIParser_ParseRequest_MaxOutputTokens(t *testing.T) {
+	parser := NewOpenAIParser()
+
+	tests := []struct {
+		name    string
+		headers map[string]string
+		body    map[string]any
+		want    *int64
+	}{
+		{
+			name:    "completions max_tokens",
+			headers: map[string]string{":path": "/v1/completions"},
+			body:    map[string]any{"model": "m", "prompt": "p", "max_tokens": float64(64)},
+			want:    ptr.To(int64(64)),
+		},
+		{
+			name:    "completions absent",
+			headers: map[string]string{":path": "/v1/completions"},
+			body:    map[string]any{"model": "m", "prompt": "p"},
+			want:    nil,
+		},
+		{
+			name:    "chat max_completion_tokens preferred over legacy max_tokens",
+			headers: map[string]string{":path": "/v1/chat/completions"},
+			body: map[string]any{
+				"model":                 "m",
+				"messages":              []any{map[string]any{"role": "user", "content": "hi"}},
+				"max_completion_tokens": float64(100),
+				"max_tokens":            float64(50),
+			},
+			want: ptr.To(int64(100)),
+		},
+		{
+			name:    "chat legacy max_tokens fallback",
+			headers: map[string]string{":path": "/v1/chat/completions"},
+			body: map[string]any{
+				"model":      "m",
+				"messages":   []any{map[string]any{"role": "user", "content": "hi"}},
+				"max_tokens": float64(50),
+			},
+			want: ptr.To(int64(50)),
+		},
+		{
+			name:    "responses max_output_tokens",
+			headers: map[string]string{":path": "/v1/responses"},
+			body:    map[string]any{"input": "hi", "max_output_tokens": float64(32)},
+			want:    ptr.To(int64(32)),
+		},
+		{
+			name:    "explicit zero binds",
+			headers: map[string]string{":path": "/v1/completions"},
+			body:    map[string]any{"model": "m", "prompt": "p", "max_tokens": float64(0)},
+			want:    ptr.To(int64(0)),
+		},
+		{
+			name:    "negative ignored",
+			headers: map[string]string{":path": "/v1/completions"},
+			body:    map[string]any{"model": "m", "prompt": "p", "max_tokens": float64(-5)},
+			want:    nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bodyBytes, err := json.Marshal(tt.body)
+			if err != nil {
+				t.Fatalf("marshal body: %v", err)
+			}
+			got, err := parser.ParseRequest(context.Background(), bodyBytes, tt.headers)
+			if err != nil {
+				t.Fatalf("ParseRequest() error = %v", err)
+			}
+			if diff := cmp.Diff(tt.want, got.Body.MaxOutputTokens); diff != "" {
+				t.Errorf("MaxOutputTokens mismatch (-want +got):\n%s", diff)
+			}
+		})
 	}
 }

@@ -22,7 +22,6 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -42,6 +41,7 @@ import (
 	attrlatency "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/datalayer/attribute/latency"
 	attrprefix "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/datalayer/attribute/prefix"
 	latencyproducerconstants "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/dataproducer/predictedlatency/constants"
+	"github.com/llm-d/llm-d-router/pkg/epp/metadata"
 )
 
 const (
@@ -50,9 +50,9 @@ const (
 	LatencyDataProviderPluginType = latencyproducerconstants.LatencyDataProviderPluginType
 
 	// TTFTSLOHeaderKey is the header key for the TTFT SLO.
-	TTFTSLOHeaderKey = "x-slo-ttft-ms"
+	TTFTSLOHeaderKey = metadata.TTFTSLOHeaderKey
 	// TPOTSLOHeaderKey is the header key for the TPOT SLO.
-	TPOTSLOHeaderKey = "x-slo-tpot-ms"
+	TPOTSLOHeaderKey = metadata.TPOTSLOHeaderKey
 
 	// ExperimentalDefaultPrefillProfile is the default profile name for prefill endpoints in disaggregated serving.
 	ExperimentalDefaultPrefillProfile = "prefill"
@@ -140,16 +140,23 @@ var DefaultConfig = Config{
 	PredictInProduce:                   true,
 }
 
-func PredictedLatencyFactory(name string, rawParameters json.RawMessage, handle plugin.Handle) (plugin.Plugin, error) {
+func PredictedLatencyFactory(name string, rawParameters *json.Decoder, handle plugin.Handle) (plugin.Plugin, error) {
 	parameters := DefaultConfig
-	if len(rawParameters) > 0 {
-		if err := json.Unmarshal(rawParameters, &parameters); err != nil {
+	if rawParameters != nil {
+		if err := rawParameters.Decode(&parameters); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal config for PredictedLatency: %w", err)
 		}
 	}
 
 	if err := parameters.validate(); err != nil {
 		return nil, fmt.Errorf("invalid PredictedLatency config: %w", err)
+	}
+
+	if handle == nil {
+		return nil, errors.New("plugin handle is required")
+	}
+	if err := registerMetrics(handle.Metrics()); err != nil {
+		return nil, err
 	}
 
 	predictor, err := startPredictor(handle)
@@ -262,7 +269,6 @@ type predictedLatencyCtx struct {
 	tpotObservations          []float64
 	predictedTPOTObservations []float64
 
-	promptText      string
 	inputTokenCount int
 
 	prefixCacheScoresForEndpoints map[string]float64
@@ -278,14 +284,15 @@ type predictedLatencyCtx struct {
 }
 
 func newPredictedLatencyContext(request *fwksched.InferenceRequest) *predictedLatencyCtx {
-	var promptText string
+	inputTokenCount := 0
 	if request.Body != nil {
-		promptText = request.Body.PromptText()
+		if tp := request.Body.TokenizedPrompt; tp != nil {
+			inputTokenCount = tp.TokenCount()
+		}
 	}
 	return &predictedLatencyCtx{
 		schedulingRequest:             *request,
-		promptText:                    promptText,
-		inputTokenCount:               len(strings.Fields(promptText)),
+		inputTokenCount:               inputTokenCount,
 		lastSeenMetrics:               make(map[string]*fwkdl.Metrics),
 		prefixCacheScoresForEndpoints: make(map[string]float64),
 		predictionsForScheduling:      make(map[string]endpointPredictionResult),
@@ -315,7 +322,7 @@ func (pl *PredictedLatency) deletePredictedLatencyContextForRequest(request *fwk
 // parseFloatHeader retrieves a header by name, parses it as a float64,
 // and returns the value or an error if the header is missing or invalid.
 func parseFloatHeader(request fwksched.InferenceRequest, headerName string) (float64, error) {
-	headerValue, ok := request.Headers[headerName]
+	headerValue, ok := metadata.GetLowerCaseHeaderValue(request.Headers, headerName)
 	if !ok {
 		return 0, nil
 	}

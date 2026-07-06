@@ -33,7 +33,7 @@ import (
 const GlobalStrictFairnessPolicyType = "global-strict-fairness-policy"
 
 // GlobalStrictFairnessPolicyFactory is the factory function for the global strict fairness policy.
-func GlobalStrictFairnessPolicyFactory(name string, _ json.RawMessage, _ fwkplugin.Handle) (fwkplugin.Plugin, error) {
+func GlobalStrictFairnessPolicyFactory(name string, _ *json.Decoder, _ fwkplugin.Handle) (fwkplugin.Plugin, error) {
 	return newGlobalStrict(name), nil
 }
 
@@ -88,7 +88,7 @@ func (p *globalStrict) Pick(
 			return true
 		}
 
-		item := queue.PeekHead()
+		item := queue.Peek()
 		if item == nil {
 			return true
 		}

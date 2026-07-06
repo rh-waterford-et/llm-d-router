@@ -34,7 +34,7 @@ const (
 var _ fwksched.Scorer = &QueueScorer{}
 
 // QueueScorerFactory defines the factory function for QueueScorer.
-func QueueScorerFactory(name string, _ json.RawMessage, _ fwkplugin.Handle) (fwkplugin.Plugin, error) {
+func QueueScorerFactory(name string, _ *json.Decoder, _ fwkplugin.Handle) (fwkplugin.Plugin, error) {
 	return NewQueueScorer().WithName(name), nil
 }
 
@@ -75,7 +75,7 @@ func (s *QueueScorer) WithName(name string) *QueueScorer {
 }
 
 // Score returns the scoring result for the given list of endpoints based on context.
-func (s *QueueScorer) Score(_ context.Context, _ *fwksched.CycleState, _ *fwksched.InferenceRequest, endpoints []fwksched.Endpoint) map[fwksched.Endpoint]float64 {
+func (s *QueueScorer) Score(_ context.Context, _ *fwksched.InferenceRequest, endpoints []fwksched.Endpoint) map[fwksched.Endpoint]float64 {
 	minQueueSize := math.MaxInt
 	maxQueueSize := math.MinInt
 

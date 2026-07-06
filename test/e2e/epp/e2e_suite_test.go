@@ -75,10 +75,15 @@ const (
 	// modelServerManifestFilepathEnvVar is the env var that holds absolute path to the manifest for the model server test resource.
 	modelServerManifestFilepathEnvVar = "MANIFEST_PATH"
 	// crdKustomizePath is the kustomize folder path for the required CRDs.
-	crdKustomizePath = "../../../deploy/components/crds-gie"
+	crdKustomizePath = "../../../config/crd"
 )
 
 const e2eLeaderElectionEnabledEnvVar = "E2E_LEADER_ELECTION_ENABLED"
+
+const (
+	gaieMetricsTestLabel        = "GAIEMetrics"
+	gaieLeaderElectionTestLabel = "GAIELeaderElection"
+)
 
 var (
 	testConfig *igwtestutils.TestConfig
@@ -89,9 +94,8 @@ var (
 	// expectedCRDs lists the CRD names that must be established after kustomize apply.
 	expectedCRDs = []string{
 		"inferencepools.inference.networking.k8s.io",
-		"inferenceobjectives.inference.networking.x-k8s.io",
-		"inferencemodelrewrites.inference.networking.x-k8s.io",
-		"inferencepoolimports.inference.networking.x-k8s.io",
+		"inferenceobjectives.llm-d.ai",
+		"inferencemodelrewrites.llm-d.ai",
 	}
 )
 

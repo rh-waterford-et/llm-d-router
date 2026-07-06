@@ -24,6 +24,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -34,12 +35,23 @@ import (
 	v1 "sigs.k8s.io/gateway-api-inference-extension/api/v1"
 
 	"github.com/llm-d/llm-d-router/apix/v1alpha2"
-	backendmetrics "github.com/llm-d/llm-d-router/pkg/epp/backend/metrics"
 	"github.com/llm-d/llm-d-router/pkg/epp/datalayer"
 	"github.com/llm-d/llm-d-router/pkg/epp/datastore"
 	"github.com/llm-d/llm-d-router/pkg/epp/util/pool"
 	testutil "github.com/llm-d/llm-d-router/pkg/epp/util/testing"
 )
+
+var endpointPoolCmpOpts = []cmp.Option{
+	cmp.Comparer(func(a, b labels.Selector) bool {
+		if a == nil && b == nil {
+			return true
+		}
+		if a == nil || b == nil {
+			return false
+		}
+		return a.String() == b.String()
+	}),
+}
 
 var (
 	selectorV1 = map[string]string{"app": "vllm_v1"}
@@ -89,7 +101,6 @@ func TestInferencePoolReconciler(t *testing.T) {
 
 	period := time.Second
 	factories := []datalayer.EndpointFactory{
-		backendmetrics.NewPodMetricsFactory(&backendmetrics.FakePodMetricsClient{}, period),
 		datalayer.NewTestRuntime(t, period),
 	}
 	for _, epf := range factories {
@@ -183,7 +194,7 @@ type diffStoreParams struct {
 
 func diffStore(store datastore.Datastore, params diffStoreParams) string {
 	gotPool, _ := store.PoolGet()
-	if diff := cmp.Diff(params.wantPool, gotPool); diff != "" {
+	if diff := cmp.Diff(params.wantPool, gotPool, endpointPoolCmpOpts...); diff != "" {
 		return "inferencePool:" + diff
 	}
 

@@ -47,7 +47,7 @@ type mqTestHarness struct {
 // This is ideal for isolating and unit testing the decorator logic of `managedQueue`.
 func newMockedMqHarness(t *testing.T, queue *mocks.MockSafeQueue, key flowcontrol.FlowKey) *mqTestHarness {
 	t.Helper()
-	return newMqHarness(t, queue, key, false)
+	return newMqHarness(t, queue, key)
 }
 
 // newRealMqHarness creates a harness that uses a real "ListQueue" implementation.
@@ -56,18 +56,17 @@ func newRealMqHarness(t *testing.T, key flowcontrol.FlowKey) *mqTestHarness {
 	t.Helper()
 	q, err := queue.NewQueueFromName(queue.ListQueueName, nil)
 	require.NoError(t, err, "Test setup: creating a real ListQueue implementation should not fail")
-	return newMqHarness(t, q, key, false)
+	return newMqHarness(t, q, key)
 }
 
 // newMqHarness is the base constructor for the test harness.
-func newMqHarness(t *testing.T, queue contracts.SafeQueue, key flowcontrol.FlowKey, isDraining bool) *mqTestHarness {
+func newMqHarness(t *testing.T, queue contracts.SafeQueue, key flowcontrol.FlowKey) *mqTestHarness {
 	t.Helper()
 
 	propagator := &mockStatsPropagator{}
 	mockPolicy := &fwkfcmocks.MockOrderingPolicy{}
 
-	isDrainingFunc := func() bool { return isDraining }
-	mq := newManagedQueue(queue, mockPolicy, key, logr.Discard(), propagator.propagate, isDrainingFunc)
+	mq := newManagedQueue(queue, mockPolicy, key, logr.Discard(), propagator.propagate)
 	require.NotNil(t, mq, "Test setup: newManagedQueue must return a valid instance")
 
 	return &mqTestHarness{
@@ -120,7 +119,6 @@ func TestManagedQueue_Add(t *testing.T) {
 	testCases := []struct {
 		name                  string
 		setupMock             func(q *mocks.MockSafeQueue)
-		isDraining            bool
 		expectErr             bool
 		expectErrIs           error // Optional
 		expectedLenDelta      int64
@@ -131,19 +129,9 @@ func TestManagedQueue_Add(t *testing.T) {
 			setupMock: func(q *mocks.MockSafeQueue) {
 				q.AddFunc = func(flowcontrol.QueueItemAccessor) {}
 			},
-			isDraining:            false,
 			expectErr:             false,
 			expectedLenDelta:      1,
 			expectedByteSizeDelta: 100,
-		},
-		{
-			name:                  "ShouldFail_AndNotChangeStats_WhenQueueIsDraining",
-			setupMock:             func(q *mocks.MockSafeQueue) {},
-			isDraining:            true,
-			expectErr:             true,
-			expectErrIs:           contracts.ErrShardDraining,
-			expectedLenDelta:      0,
-			expectedByteSizeDelta: 0,
 		},
 	}
 
@@ -151,7 +139,7 @@ func TestManagedQueue_Add(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			q := &mocks.MockSafeQueue{}
-			h := newMqHarness(t, q, flowKey, tc.isDraining)
+			h := newMqHarness(t, q, flowKey)
 			item := fwkfcmocks.NewMockQueueItemAccessor(100, "req", flowKey)
 			if tc.setupMock != nil {
 				tc.setupMock(q)
@@ -339,8 +327,7 @@ func TestManagedQueue_FlowQueueAccessor(t *testing.T) {
 		q := &mocks.MockSafeQueue{}
 		harness := newMockedMqHarness(t, q, flowKey)
 		item := fwkfcmocks.NewMockQueueItemAccessor(100, "req-1", flowKey)
-		q.PeekHeadV = item
-		q.PeekTailV = item
+		q.PeekV = item
 		q.NameV = "MockQueue"
 		q.CapabilitiesV = []flowcontrol.QueueCapability{flowcontrol.CapabilityFIFO}
 		require.NoError(t, harness.mq.Add(item), "Test setup: Adding an item must succeed")
@@ -358,21 +345,18 @@ func TestManagedQueue_FlowQueueAccessor(t *testing.T) {
 		assert.Equal(t, harness.mockPolicy, accessor.OrderingPolicy(),
 			"Accessor OrderingPolicy() must return the policy provided by the configured ordering policy")
 
-		peekedHead := accessor.PeekHead()
-		assert.Same(t, item, peekedHead, "Accessor PeekHead() must return the exact item instance at the head")
-
-		peekedTail := accessor.PeekTail()
-		assert.Same(t, item, peekedTail, "Accessor PeekTail() must return the exact item instance at the tail")
+		peekedHead := accessor.Peek()
+		assert.Same(t, item, peekedHead, "Accessor Peek() must return the exact item instance at the head")
 	})
 
 	t.Run("EmptyQueue", func(t *testing.T) {
 		t.Parallel()
 		flowKey := flowcontrol.FlowKey{ID: "flow", Priority: 1}
 		q := &mocks.MockSafeQueue{}
-		q.PeekHeadV = nil
+		q.PeekV = nil
 		harness := newMockedMqHarness(t, q, flowKey)
 		accessor := harness.mq.FlowQueueAccessor()
-		assert.Nil(t, accessor.PeekHead(), "Accessor PeekHead() should return an nil on an empty queue")
+		assert.Nil(t, accessor.Peek(), "Accessor Peek() should return an nil on an empty queue")
 	})
 }
 

@@ -48,7 +48,7 @@ schedulingProfiles:
 
 #### Token Counting
 
-Reads tokenized prompt data from `request.Body.TokenizedPrompt` as written by the `token-producer` DataProducer plugin. When a token-producer is configured, the exact token count is used. Otherwise falls back to character-based estimation (characters × 0.25).
+Derives context length from `len(request.Body.TokenizedPrompt.TokenIDs)`, written by a `token-producer` — auto-created with the tokenizer-free `estimate` backend when none is configured, so context-length scoring works without extra setup.
 
 **Example — Scorer with token-producer:**
 ```yaml
@@ -57,7 +57,7 @@ plugins:
     parameters:
       modelName: meta-llama/Llama-3.1-8B-Instruct
       vllm:
-        http: http://localhost:8000
+        url: http://localhost:8000
   - type: context-length-aware
     parameters:
       label: llm-d.ai/context-length-range

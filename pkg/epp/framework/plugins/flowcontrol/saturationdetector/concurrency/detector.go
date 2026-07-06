@@ -43,12 +43,12 @@ const (
 // ConcurrencyDetectorFactory instantiates the detector plugin using the provided JSON parameters.
 func ConcurrencyDetectorFactory(
 	name string,
-	params json.RawMessage,
+	params *json.Decoder,
 	handle fwkplugin.Handle,
 ) (fwkplugin.Plugin, error) {
 	var apiCfg apiConfig
-	if len(params) > 0 {
-		if err := json.Unmarshal(params, &apiCfg); err != nil {
+	if params != nil {
+		if err := params.Decode(&apiCfg); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal concurrency detector config: %w", err)
 		}
 	}
@@ -103,9 +103,9 @@ func (d *detector) TypedName() fwkplugin.TypedName {
 	return d.typedName
 }
 
-func (d *detector) Consumes() map[fwkplugin.DataKey]any {
-	return map[fwkplugin.DataKey]any{
-		d.inFlightLoadDataKey: attrconcurrency.InFlightLoad{},
+func (d *detector) Consumes() fwkplugin.DataDependencies {
+	return fwkplugin.DataDependencies{
+		Required: map[fwkplugin.DataKey]any{d.inFlightLoadDataKey: attrconcurrency.InFlightLoad{}},
 	}
 }
 
@@ -125,8 +125,22 @@ func (d *detector) getLoad(m datalayer.AttributeMap) *attrconcurrency.InFlightLo
 //
 //	Saturation = Total Inflight Requests / Total MaxConcurrency Capacity.
 func (d *detector) Saturation(_ context.Context, endpoints []datalayer.Endpoint) float64 {
+	if len(endpoints) == 0 {
+		return 1.0
+	}
+
 	var totalInflight, totalCapacity int64
 	for _, e := range endpoints {
+		if e == nil {
+			continue
+		}
+
+		if d.config.mode == modeTokens {
+			totalCapacity += d.config.maxTokenConcurrency
+		} else {
+			totalCapacity += d.config.maxConcurrency
+		}
+
 		if e.GetMetadata() == nil {
 			continue
 		}
@@ -135,10 +149,8 @@ func (d *detector) Saturation(_ context.Context, endpoints []datalayer.Endpoint)
 
 		if d.config.mode == modeTokens {
 			totalInflight += load.Tokens
-			totalCapacity += d.config.maxTokenConcurrency
 		} else {
 			totalInflight += load.Requests
-			totalCapacity += d.config.maxConcurrency
 		}
 	}
 
@@ -154,7 +166,6 @@ func (d *detector) Saturation(_ context.Context, endpoints []datalayer.Endpoint)
 // It applies a relaxed limit (MaxConcurrency * (1 + Headroom)) to allow for scheduling flexibility and burst tolerance.
 func (d *detector) Filter(
 	_ context.Context,
-	_ *fwksched.CycleState,
 	_ *fwksched.InferenceRequest,
 	endpoints []fwksched.Endpoint,
 ) []fwksched.Endpoint {
@@ -169,6 +180,9 @@ func (d *detector) Filter(
 	}
 
 	for _, e := range endpoints {
+		if e == nil {
+			continue
+		}
 		load := d.getLoad(e)
 
 		if d.config.mode == modeTokens {

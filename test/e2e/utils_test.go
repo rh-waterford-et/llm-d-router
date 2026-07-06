@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -17,9 +18,11 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	apilabels "k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/yaml"
 )
 
 const (
@@ -157,6 +160,9 @@ func removeEmptyArgs(inputs []string) []string {
 			if strings.TrimSpace(line) == `- ""` {
 				continue
 			}
+			if strings.TrimSpace(line) == `-` {
+				continue
+			}
 			filtered = append(filtered, line)
 		}
 		outputs[idx] = strings.Join(filtered, "\n")
@@ -187,6 +193,81 @@ func removeEmptyLabels(inputs []string) []string {
 	return outputs
 }
 
+func isModelReal(modelName string) bool {
+	req, err := http.NewRequest("GET", "https://huggingface.co/api/models/"+modelName, nil)
+	if err != nil {
+		return false
+	}
+	if token := os.Getenv("HF_TOKEN"); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	return resp.StatusCode == http.StatusOK
+}
+
+// removeRenderSidecar takes a slice of YAML strings (each may contain multiple
+// objects separated by "---") and returns the same slice with the vllm-render
+// container and the model-cache volume stripped from any Deployment.
+func removeRenderSidecar(inputs []string) []string {
+	outputs := make([]string, len(inputs))
+	for idx, input := range inputs {
+		docs := strings.Split(input, "\n---")
+		rendered := make([]string, 0, len(docs))
+		for _, doc := range docs {
+			if strings.TrimSpace(doc) == "" {
+				continue
+			}
+			rendered = append(rendered, filterDocument(doc))
+		}
+		outputs[idx] = strings.Join(rendered, "\n---\n")
+	}
+	return outputs
+}
+
+func filterDocument(doc string) string {
+	obj := &unstructured.Unstructured{}
+	err := yaml.Unmarshal([]byte(doc), &obj.Object)
+	gomega.Expect(err).ShouldNot(gomega.HaveOccurred())
+	if len(obj.Object) == 0 {
+		return doc
+	}
+	if obj.GetKind() == "Deployment" {
+		removePodSpecListItem(obj, "containers", "vllm-render")
+		removePodSpecListItem(obj, "initContainers", "vllm-render")
+		removePodSpecListItem(obj, "volumes", "model-cache")
+	}
+	out, err := yaml.Marshal(obj.Object)
+	gomega.Expect(err).ShouldNot(gomega.HaveOccurred())
+	return strings.TrimRight(string(out), "\n")
+}
+
+func removePodSpecListItem(obj *unstructured.Unstructured, fieldName, itemName string) {
+	path := []string{"spec", "template", "spec", fieldName}
+	items, found, err := unstructured.NestedSlice(obj.Object, path...)
+	if err != nil || !found {
+		return
+	}
+	filtered := make([]any, 0, len(items))
+	for _, item := range items {
+		if m, ok := item.(map[string]any); ok && m["name"] == itemName {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	if len(filtered) == 0 {
+		unstructured.RemoveNestedField(obj.Object, path...)
+		return
+	}
+	err = unstructured.SetNestedSlice(obj.Object, filtered, path...)
+	gomega.Expect(err).ShouldNot(gomega.HaveOccurred())
+}
+
 func substituteMany(inputs []string, substitutions map[string]string) []string {
 	outputs := make([]string, len(inputs))
 	for idx, input := range inputs {
@@ -199,11 +280,9 @@ func substituteMany(inputs []string, substitutions map[string]string) []string {
 	return outputs
 }
 
-// getCounterMetric fetches the current value of a Prometheus counter metric from the given metrics URL.
+// getMetrics fetches the current Prometheus metrics from the given metrics URL.
 // Retries on transient connection errors (e.g. the previous EPP pod is still terminating).
-//
-//nolint:unparam // metricName may vary in future test cases
-func getCounterMetric(metricsURL, metricName, labelMatch string) int {
+func getMetrics(metricsURL string) []string {
 	var body []byte
 	gomega.Eventually(func() error {
 		resp, err := http.Get(metricsURL)
@@ -218,8 +297,15 @@ func getCounterMetric(metricsURL, metricName, labelMatch string) int {
 		return err
 	}, 10*time.Second, 1*time.Second).Should(gomega.Succeed())
 
-	metricsText := string(body)
-	for _, line := range strings.Split(metricsText, "\n") {
+	return strings.Split(string(body), "\n")
+}
+
+// getCounterMetric fetches the current value of a Prometheus counter metric from the given metrics URL.
+// Retries on transient connection errors (e.g. the previous EPP pod is still terminating).
+//
+//nolint:unparam // metricName may vary in future test cases
+func getCounterMetric(metricsURL, metricName, labelMatch string) int {
+	for _, line := range getMetrics(metricsURL) {
 		if strings.HasPrefix(line, metricName) && strings.Contains(line, labelMatch) {
 			fields := strings.Fields(line)
 			if len(fields) >= 2 {

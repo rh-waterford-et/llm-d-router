@@ -59,10 +59,10 @@ type Plugin struct {
 	latencyPredictionInfoDataKey fwkplugin.DataKey
 }
 
-func Factory(name string, rawParameters json.RawMessage, _ fwkplugin.Handle) (fwkplugin.Plugin, error) {
+func Factory(name string, rawParameters *json.Decoder, _ fwkplugin.Handle) (fwkplugin.Plugin, error) {
 	config := DefaultConfig
-	if len(rawParameters) > 0 {
-		if err := json.Unmarshal(rawParameters, &config); err != nil {
+	if rawParameters != nil {
+		if err := rawParameters.Decode(&config); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 		}
 	}
@@ -85,7 +85,7 @@ func (p *Plugin) TypedName() fwkplugin.TypedName {
 // endpoints are kept. 1% of the time, only negative-tier endpoints are kept
 // (epsilon exploration for recovery). If only one tier has endpoints, that
 // tier is returned. If no endpoints have predictions, all are kept.
-func (p *Plugin) Filter(ctx context.Context, _ *fwksched.CycleState, _ *fwksched.InferenceRequest, endpoints []fwksched.Endpoint) []fwksched.Endpoint {
+func (p *Plugin) Filter(ctx context.Context, _ *fwksched.InferenceRequest, endpoints []fwksched.Endpoint) []fwksched.Endpoint {
 	logger := log.FromContext(ctx)
 
 	if len(endpoints) <= 1 {
@@ -141,8 +141,8 @@ func (p *Plugin) Filter(ctx context.Context, _ *fwksched.CycleState, _ *fwksched
 	}
 }
 
-func (p *Plugin) Consumes() map[fwkplugin.DataKey]any {
-	return map[fwkplugin.DataKey]any{
-		p.latencyPredictionInfoDataKey: attrlatency.LatencyPredictionInfo{},
+func (p *Plugin) Consumes() fwkplugin.DataDependencies {
+	return fwkplugin.DataDependencies{
+		Required: map[fwkplugin.DataKey]any{p.latencyPredictionInfoDataKey: attrlatency.LatencyPredictionInfo{}},
 	}
 }

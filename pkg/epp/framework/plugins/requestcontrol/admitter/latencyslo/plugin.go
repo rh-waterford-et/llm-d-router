@@ -30,13 +30,14 @@ import (
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/interface/requestcontrol"
 	fwksched "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/scheduling"
 	attrlatency "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/datalayer/attribute/latency"
+	"github.com/llm-d/llm-d-router/pkg/epp/metadata"
 )
 
 const (
 	LatencyAdmissionPluginType = "latency-slo-admitter"
 
-	ttftSLOHeaderKey = "x-slo-ttft-ms"
-	tpotSLOHeaderKey = "x-slo-tpot-ms"
+	ttftSLOHeaderKey = metadata.TTFTSLOHeaderKey
+	tpotSLOHeaderKey = metadata.TPOTSLOHeaderKey
 )
 
 // compile-time validation
@@ -59,10 +60,10 @@ type LatencyAdmission struct {
 }
 
 // LatencyAdmissionFactory creates a new LatencyAdmission plugin instance.
-func LatencyAdmissionFactory(name string, rawParameters json.RawMessage, _ fwkplugin.Handle) (fwkplugin.Plugin, error) {
+func LatencyAdmissionFactory(name string, rawParameters *json.Decoder, _ fwkplugin.Handle) (fwkplugin.Plugin, error) {
 	config := LatencyAdmissionDefaultConfig
-	if len(rawParameters) > 0 {
-		if err := json.Unmarshal(rawParameters, &config); err != nil {
+	if rawParameters != nil {
+		if err := rawParameters.Decode(&config); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal config for LatencyAdmission: %w", err)
 		}
 	}
@@ -88,19 +89,19 @@ func (p *LatencyAdmission) TypedName() fwkplugin.TypedName {
 }
 
 // Consumes declares that this plugin reads latency prediction data from endpoints.
-func (p *LatencyAdmission) Consumes() map[fwkplugin.DataKey]any {
-	return map[fwkplugin.DataKey]any{
-		p.latencyPredictionInfoDataKey: attrlatency.LatencyPredictionInfo{},
+func (p *LatencyAdmission) Consumes() fwkplugin.DataDependencies {
+	return fwkplugin.DataDependencies{
+		Required: map[fwkplugin.DataKey]any{p.latencyPredictionInfoDataKey: attrlatency.LatencyPredictionInfo{}},
 	}
 }
 
-// AdmitRequest rejects sheddable requests if no endpoint can serve them within SLO.
+// Admit rejects sheddable requests if no endpoint can serve them within SLO.
 //
 // Reject only when ALL of:
 //   - No endpoint has a valid prediction (all violate SLO)
 //   - No endpoint is idle (all have running requests)
 //   - No cold pod exists (predictions are reliable)
-func (p *LatencyAdmission) AdmitRequest(ctx context.Context, request *fwksched.InferenceRequest, endpoints []fwksched.Endpoint) error {
+func (p *LatencyAdmission) Admit(ctx context.Context, request *fwksched.InferenceRequest, endpoints []fwksched.Endpoint) error {
 	logger := log.FromContext(ctx)
 	if request == nil {
 		return nil
@@ -112,8 +113,10 @@ func (p *LatencyAdmission) AdmitRequest(ctx context.Context, request *fwksched.I
 	}
 
 	// Check if SLOs are set — if not, we can't determine validity, so admit.
-	ttftSLO := parseFloatHeaderValue(request.Headers[ttftSLOHeaderKey])
-	tpotSLO := parseFloatHeaderValue(request.Headers[tpotSLOHeaderKey])
+	ttftSLOHeader, _ := metadata.GetLowerCaseHeaderValue(request.Headers, ttftSLOHeaderKey)
+	tpotSLOHeader, _ := metadata.GetLowerCaseHeaderValue(request.Headers, tpotSLOHeaderKey)
+	ttftSLO := parseFloatHeaderValue(ttftSLOHeader)
+	tpotSLO := parseFloatHeaderValue(tpotSLOHeader)
 	hasSLO := ttftSLO > 0 || tpotSLO > 0
 	if !hasSLO {
 		return nil

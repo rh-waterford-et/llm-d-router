@@ -64,7 +64,7 @@ type ProbabilisticAdmitter struct {
 }
 
 // Factory creates a ProbabilisticAdmitter from plugin configuration.
-func Factory(name string, rawParameters json.RawMessage, _ fwkplugin.Handle) (fwkplugin.Plugin, error) {
+func Factory(name string, rawParameters *json.Decoder, _ fwkplugin.Handle) (fwkplugin.Plugin, error) {
 	params := Parameters{
 		QueueDepthThreshold:  defaultQueueDepthThreshold,
 		KVCacheUtilThreshold: defaultKVCacheUtilThreshold,
@@ -72,7 +72,7 @@ func Factory(name string, rawParameters json.RawMessage, _ fwkplugin.Handle) (fw
 		K:                    defaultK,
 	}
 	if rawParameters != nil {
-		if err := json.Unmarshal(rawParameters, &params); err != nil {
+		if err := rawParameters.Decode(&params); err != nil {
 			return nil, fmt.Errorf("failed to parse parameters for '%s' plugin: %w", Type, err)
 		}
 	}
@@ -120,9 +120,9 @@ func (p *ProbabilisticAdmitter) TypedName() fwkplugin.TypedName {
 	return p.typedName
 }
 
-// AdmitRequest implements requestcontrol.Admitter.
+// Admit implements requestcontrol.Admitter.
 // Returns nil to admit, or a ResourceExhausted error to reject.
-func (p *ProbabilisticAdmitter) AdmitRequest(_ context.Context, request *fwksched.InferenceRequest, pods []fwksched.Endpoint) error {
+func (p *ProbabilisticAdmitter) Admit(_ context.Context, request *fwksched.InferenceRequest, pods []fwksched.Endpoint) error {
 	if request == nil {
 		return nil
 	}

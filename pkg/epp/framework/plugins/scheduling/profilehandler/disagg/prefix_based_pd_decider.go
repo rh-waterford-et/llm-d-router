@@ -17,10 +17,6 @@ import (
 const (
 	// PrefixBasedPDDeciderPluginType is the type-name of the prefixBasedPDDecider plugin.
 	PrefixBasedPDDeciderPluginType = "prefix-based-pd-decider"
-
-	// AverageCharactersPerToken is an estimated average characters per token,
-	// used since the request we cache is not tokenized.
-	AverageCharactersPerToken = 4
 )
 
 // PrefixBasedPDDeciderConfig holds the configuration for the prefixBasedPDDecider plugin.
@@ -48,14 +44,14 @@ type PrefixBasedPDDecider struct {
 
 // PrefixBasedPDDeciderPluginFactory defines the factory function for creating
 // a new instance of the prefixBasedPDDecider.
-func PrefixBasedPDDeciderPluginFactory(name string, rawParameters json.RawMessage,
+func PrefixBasedPDDeciderPluginFactory(name string, rawParameters *json.Decoder,
 	handle plugin.Handle) (plugin.Plugin, error) {
 	config := PrefixBasedPDDeciderConfig{
 		NonCachedTokens: 0,
 	}
 
 	if rawParameters != nil {
-		if err := json.Unmarshal(rawParameters, &config); err != nil {
+		if err := rawParameters.Decode(&config); err != nil {
 			return nil, fmt.Errorf("failed to parse %s plugin config: %w", PrefixBasedPDDeciderPluginType, err)
 		}
 	}
@@ -131,8 +127,11 @@ func (d *PrefixBasedPDDecider) disaggregate(ctx context.Context, request *schedu
 		return false
 	}
 
-	// number of cached tokens
-	hitPrefixTokens := prefixCacheMatchInfo.MatchBlocks() * prefixCacheMatchInfo.BlockSizeTokens()
+	// number of cached tokens. Use the unweighted cached-block count, not the
+	// tier-weighted match score: a RAM-cached prefix must contribute its full
+	// token count here, otherwise the non-cached suffix is overestimated and
+	// requests with large local-RAM hits are misrouted to remote prefill.
+	hitPrefixTokens := prefixCacheMatchInfo.CachedBlockCount() * prefixCacheMatchInfo.BlockSizeTokens()
 	// length of non-cached suffix in tokens
 	nonCachedTokens := inputTokens - hitPrefixTokens
 
@@ -153,15 +152,9 @@ func getUserInputLenInTokens(request *scheduling.InferenceRequest) (int, error) 
 	if request == nil || request.Body == nil {
 		return 0, errors.New("request or request body is nil")
 	}
-	if request.Body.Completions != nil {
-		return len(request.Body.Completions.Prompt.Raw) / AverageCharactersPerToken, nil
+
+	if tp := request.Body.TokenizedPrompt; tp != nil {
+		return tp.TokenCount(), nil
 	}
-	if request.Body.ChatCompletions == nil {
-		return 0, errors.New("request has neither completions nor chat completions body")
-	}
-	prompt, err := json.Marshal(request.Body.ChatCompletions.Messages)
-	if err != nil {
-		return 0, err
-	}
-	return len(prompt) / AverageCharactersPerToken, nil
+	return 0, nil
 }

@@ -29,9 +29,11 @@ import (
 
 	reqcommon "github.com/llm-d/llm-d-router/pkg/common/request"
 	fwkdl "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/datalayer"
+	fwkplugin "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/plugin"
 	fwkrh "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/requesthandling"
 	fwksched "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/scheduling"
-	igwtestutils "github.com/llm-d/llm-d-router/test/utils/igw"
+	"github.com/llm-d/llm-d-router/pkg/epp/metadata"
+	testutils "github.com/llm-d/llm-d-router/test/utils"
 )
 
 // mockPredictor implements PredictorInterface for testing
@@ -119,6 +121,7 @@ func createTestInferenceRequest(reqID string, ttftSLO, tpotSLO float64) *fwksche
 		Completions: &fwkrh.CompletionsRequest{
 			Prompt: fwkrh.Prompt{Raw: "test prompt"},
 		},
+		TokenizedPrompt: &fwkrh.TokenizedPrompt{PerPromptTokens: [][]uint32{make([]uint32, 2)}},
 	})
 }
 
@@ -130,6 +133,7 @@ func createTestChatCompletionsInferenceRequest(reqID string, ttftSLO, tpotSLO fl
 				{Role: "user", Content: fwkrh.Content{Raw: "Tell me a joke."}},
 			},
 		},
+		TokenizedPrompt: &fwkrh.TokenizedPrompt{PerPromptTokens: [][]uint32{make([]uint32, 8)}},
 	})
 }
 
@@ -137,15 +141,70 @@ func createTestInferenceRequestWithBody(reqID string, ttftSLO, tpotSLO float64, 
 	headers := make(map[string]string)
 	headers[reqcommon.RequestIDHeaderKey] = reqID
 	if ttftSLO > 0 {
-		headers["x-ttft-slo"] = fmt.Sprintf("%f", ttftSLO)
+		headers[metadata.TTFTSLOHeaderKey] = fmt.Sprintf("%f", ttftSLO)
 	}
 	if tpotSLO > 0 {
-		headers["x-avg-tpot-slo"] = fmt.Sprintf("%f", tpotSLO)
+		headers[metadata.TPOTSLOHeaderKey] = fmt.Sprintf("%f", tpotSLO)
 	}
 
 	return &fwksched.InferenceRequest{
 		Headers: headers,
 		Body:    body,
+	}
+}
+
+func TestParseSLOHeaders(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		headers  map[string]string
+		wantTTFT float64
+		wantTPOT float64
+	}{
+		{
+			name: "SLO headers",
+			headers: map[string]string{
+				metadata.TTFTSLOHeaderKey: "100",
+				metadata.TPOTSLOHeaderKey: "50",
+			},
+			wantTTFT: 100,
+			wantTPOT: 50,
+		},
+		{
+			name: "old aliases",
+			headers: map[string]string{
+				metadata.OldTTFTSLOHeaderKey: "101",
+				metadata.OldTPOTSLOHeaderKey: "51",
+			},
+			wantTTFT: 101,
+			wantTPOT: 51,
+		},
+		{
+			name: "new headers take precedence",
+			headers: map[string]string{
+				metadata.TTFTSLOHeaderKey:    "102",
+				metadata.OldTTFTSLOHeaderKey: "999",
+				metadata.TPOTSLOHeaderKey:    "52",
+				metadata.OldTPOTSLOHeaderKey: "999",
+			},
+			wantTTFT: 102,
+			wantTPOT: 52,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			pl := &PredictedLatency{}
+			req := &fwksched.InferenceRequest{Headers: tt.headers}
+			plCtx := &predictedLatencyCtx{}
+
+			pl.parseSLOHeaders(context.Background(), req, plCtx)
+
+			assert.Equal(t, tt.wantTTFT, plCtx.ttftSLO)
+			assert.Equal(t, tt.wantTPOT, plCtx.avgTPOTSLO)
+		})
 	}
 }
 
@@ -327,9 +386,9 @@ func TestPredictedLatencyFactory(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			handle := igwtestutils.NewTestHandle(context.Background())
+			handle := testutils.NewTestHandle(context.Background())
 			rawParams := json.RawMessage(tt.jsonParams)
-			plugin, err := PredictedLatencyFactory(tt.pluginName, rawParams, handle)
+			plugin, err := PredictedLatencyFactory(tt.pluginName, fwkplugin.StrictDecoder(rawParams), handle)
 
 			if tt.expectErr {
 				assert.Error(t, err)
@@ -363,9 +422,9 @@ func TestPredictedLatencyFactoryInvalidJSON(t *testing.T) {
 
 	for _, tt := range invalidTests {
 		t.Run(tt.name, func(t *testing.T) {
-			handle := igwtestutils.NewTestHandle(context.Background())
+			handle := testutils.NewTestHandle(context.Background())
 			rawParams := json.RawMessage(tt.jsonParams)
-			plugin, err := PredictedLatencyFactory("test", rawParams, handle)
+			plugin, err := PredictedLatencyFactory("test", fwkplugin.StrictDecoder(rawParams), handle)
 
 			assert.Error(t, err)
 			assert.Nil(t, plugin)

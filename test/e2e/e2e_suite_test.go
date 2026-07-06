@@ -15,6 +15,7 @@ import (
 	apiextv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
 	k8slog "sigs.k8s.io/controller-runtime/pkg/log"
@@ -28,12 +29,14 @@ import (
 const (
 	// kindClusterName is the name of the Kind cluster created for e2e tests.
 	kindClusterName = "e2e-tests"
+	// eppName is the value of the app label on the EPP pods
+	eppName = "e2e-epp"
 	// defaultReadyTimeout is the default timeout for a resource to report a ready state.
 	defaultReadyTimeout = 3 * time.Minute
 	// defaultInterval is the default interval to check if a resource exists or ready conditions.
 	defaultInterval = time.Millisecond * 250
-	// xInferPoolManifest is the manifest for the inference pool CRD with 'inference.networking.x-k8s.io' group.
-	gieCrdsKustomize = "../../deploy/components/crds-gie"
+	// crdKustomizePath is the kustomize path for all CRDs (upstream GIE + local llm-d.ai).
+	crdKustomizePath = "../../config/crd"
 	// inferExtManifest is the manifest for the inference extension test resources.
 	inferExtManifest = "../../deploy/components/inference-gateway/inference-pools.yaml"
 	// simModelName is the test model name.
@@ -50,6 +53,14 @@ const (
 	serviceAccountManifest = "../../deploy/components/inference-gateway/service-accounts.yaml"
 	// servicesManifest is the manifest for the EPP's service resources.
 	servicesManifest = "../../deploy/environments/dev/e2e-infra/services.yaml"
+
+	// CI shards scheduler e2e specs with label filters.
+	extendedTestLabel      = "Extended"
+	disruptiveTestLabel    = "Disruptive"
+	sharedStorageTestLabel = "SharedStorage"
+	metricsTestLabel       = "Metrics"
+	deprecatedPDTestLabel  = "DeprecatedPD"
+	disaggTestLabel        = "Disagg"
 )
 
 var (
@@ -62,12 +73,12 @@ var (
 	// Set E2E_KEEP_CLUSTER_ON_FAILURE=true to enable.
 	keepClusterOnFailure = env.GetEnvBool("E2E_KEEP_CLUSTER_ON_FAILURE", false, ginkgo.GinkgoLogr)
 
-	containerRuntime  = env.GetEnvString("CONTAINER_RUNTIME", "docker", ginkgo.GinkgoLogr)
-	eppImage          = env.GetEnvString("EPP_IMAGE", "ghcr.io/llm-d/llm-d-router-endpoint-picker:dev", ginkgo.GinkgoLogr)
-	vllmSimImage      = env.GetEnvString("VLLM_IMAGE", "ghcr.io/llm-d/llm-d-inference-sim:v0.8.2", ginkgo.GinkgoLogr)
-	sideCarImage      = env.GetEnvString("SIDECAR_IMAGE", "ghcr.io/llm-d/llm-d-router-disagg-sidecar:dev", ginkgo.GinkgoLogr)
-	udsTokenizerImage = env.GetEnvString("UDS_TOKENIZER_IMAGE", "ghcr.io/llm-d/llm-d-uds-tokenizer:dev", ginkgo.GinkgoLogr)
-	vllmRenderImage   = env.GetEnvString("VLLM_RENDER_IMAGE", "vllm/vllm-openai-cpu:v0.19.1", ginkgo.GinkgoLogr)
+	containerRuntime = env.GetEnvString("CONTAINER_RUNTIME", "docker", ginkgo.GinkgoLogr)
+	eppImage         = env.GetEnvString("EPP_IMAGE", "ghcr.io/llm-d/llm-d-router-endpoint-picker:dev", ginkgo.GinkgoLogr)
+	vllmSimImage     = env.GetEnvString("VLLM_IMAGE", "ghcr.io/llm-d/llm-d-inference-sim:v0.9.2", ginkgo.GinkgoLogr)
+	sideCarImage     = env.GetEnvString("SIDECAR_IMAGE", "ghcr.io/llm-d/llm-d-router-disagg-sidecar:dev", ginkgo.GinkgoLogr)
+	vllmRenderImage  = env.GetEnvString("VLLM_RENDER_IMAGE", "vllm/vllm-openai-cpu:v0.21.0", ginkgo.GinkgoLogr)
+	loadRenderImage  = env.GetEnvBool("LOAD_VLLM_RENDER_IMAGE", true, ginkgo.GinkgoLogr)
 	// nsName is the namespace in which the K8S objects will be created
 	nsName = env.GetEnvString("NAMESPACE", "default", ginkgo.GinkgoLogr)
 
@@ -199,8 +210,9 @@ func setupK8sCluster() {
 	kindLoadImage(vllmSimImage)
 	kindLoadImage(eppImage)
 	kindLoadImage(sideCarImage)
-	kindLoadImage(udsTokenizerImage)
-	kindLoadImage(vllmRenderImage)
+	if loadRenderImage {
+		kindLoadImage(vllmRenderImage)
+	}
 }
 
 func kindLoadImage(image string) {
@@ -272,11 +284,17 @@ func setupNameSpace() {
 	_, err = testConfig.KubeCli.CoreV1().Namespaces().Create(testConfig.Context, namespace, metav1.CreateOptions{})
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
 	createdNameSpace = true
+
+	ginkgo.By("Ensuring namespace exists: " + nsName)
+	testutils.EventuallyExists(testConfig, func() error {
+		return testConfig.K8sClient.Get(testConfig.Context,
+			types.NamespacedName{Name: nsName}, &corev1.Namespace{})
+	})
 }
 
 // createCRDs creates the Inference Extension CRDs used for testing.
 func createCRDs() {
-	crds := runKustomize(gieCrdsKustomize)
+	crds := runKustomize(crdKustomizePath)
 	crdObjects = testutils.CreateObjsFromYaml(testConfig, crds)
 }
 
