@@ -1,0 +1,18 @@
+# Sample EPP configuration for running with multimodal endpoints
+# (TTS, STT, image generation) alongside standard LLM inference
+apiVersion: llm-d.ai/v1alpha1
+kind: EndpointPickerConfig
+plugins:
+- type: modality-filter
+- type: queue-scorer
+- type: decode-filter
+- type: max-score-picker
+- type: single-profile-handler
+schedulingProfiles:
+- name: default
+  plugins:
+  - pluginRef: modality-filter
+  - pluginRef: decode-filter
+  - pluginRef: max-score-picker
+  - pluginRef: queue-scorer
+    weight: 1

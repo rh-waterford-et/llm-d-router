@@ -101,7 +101,7 @@ func (s *STTScorer) Consumes() map[string]any {
 }
 
 // Score scores endpoints for STT workloads. Encoder-decoder models like Whisper
-// benefit most from encoder batching — endpoints with lower queue depth have
+// benefit most from encoder batching -- endpoints with lower queue depth have
 // more headroom for batching incoming encoder work.
 func (s *STTScorer) Score(_ context.Context, _ *fwksched.InferenceRequest, endpoints []fwksched.Endpoint) map[fwksched.Endpoint]float64 {
 	scores := make(map[fwksched.Endpoint]float64, len(endpoints))

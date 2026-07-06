@@ -30,7 +30,10 @@ const (
 	ModelArchEncoderDecSTT  = "encoder-decoder-stt"
 	ModelArchAutoRegressLLM = "autoregressive-llm"
 
-	// API paths for multimodal endpoints
+	// API paths for all endpoints
+	ChatCompletionsPath     = "/v1/chat/completions"
+	CompletionsPath         = "/v1/completions"
+	ResponsesPath           = "/v1/responses"
 	AudioSpeechPath         = "/v1/audio/speech"
 	AudioTranscriptionsPath = "/v1/audio/transcriptions"
 	ImagesGenerationsPath   = "/v1/images/generations"

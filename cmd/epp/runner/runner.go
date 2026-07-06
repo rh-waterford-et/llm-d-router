@@ -518,6 +518,11 @@ func (r *Runner) registerInTreePlugins() {
 	fwkplugin.Register(nohitlru.NoHitLRUType, nohitlru.Factory)
 	fwkplugin.Register(activerequest.ActiveRequestType, activerequest.Factory)
 	fwkplugin.Register(preciseprefixcache.PrecisePrefixCachePluginType, preciseprefixcache.PluginFactory)
+	// Multimodal plugins
+	fwkplugin.Register(modality.ModalityFilterType, modality.ModalityFilterFactory)
+	fwkplugin.Register(tts.TTSScorerType, tts.TTSScorerFactory)
+	fwkplugin.Register(stt.STTScorerType, stt.STTScorerFactory)
+	fwkplugin.Register(diffusion.DiffusionScorerType, diffusion.DiffusionScorerFactory)
 	fwkplugin.Register(mmcacheaffinity.Type, mmcacheaffinity.Factory)
 	fwkplugin.Register(preciseproducer.PluginType, preciseproducer.PluginFactory)
 	// Multimodal plugins

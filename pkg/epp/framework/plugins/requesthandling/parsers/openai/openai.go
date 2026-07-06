@@ -34,14 +34,25 @@ import (
 const (
 	OpenAIParserType = "openai-parser"
 
-	conversationsAPI   = "conversations"
-	responsesAPI       = "responses"
-	chatCompletionsAPI = "chat/completions"
-	completionsAPI     = "completions"
-	embeddingsAPI      = "embeddings"
+	conversationsAPI       = "conversations"
+	responsesAPI           = "responses"
+	chatCompletionsAPI     = "chat/completions"
+	completionsAPI         = "completions"
+	embeddingsAPI          = "embeddings"
+	audioSpeechAPI         = "audio/speech"
+	audioTranscriptionsAPI = "audio/transcriptions"
+	imagesGenerationsAPI   = "images/generations"
+	inferenceAPI           = "inference"
 
 	streamingRespPrefix = "data: "
 	streamingEndMsg     = "data: [DONE]"
+
+	// OpenAI API object types
+	objectTypeResponse            = "response"
+	objectTypeConversation        = "conversation"
+	objectTypeChatCompletion      = "chat.completion"
+	objectTypeChatCompletionChunk = "chat.completion.chunk"
+	objectTypeTemplateCompletion  = "text_completion"
 
 	contentType = "content-type"
 	// The base media type for Server-Sent Events. We check for this substring
@@ -90,6 +101,10 @@ func (p *OpenAIParser) Claims() fwkrh.Claims {
 			embeddingsAPI,
 			responsesAPI,
 			conversationsAPI,
+			audioSpeechAPI,
+			audioTranscriptionsAPI,
+			imagesGenerationsAPI,
+			inferenceAPI,
 			chatCompletionsAPI + "/render",
 			completionsAPI + "/render",
 		},
@@ -197,6 +212,18 @@ func determineAPITypeFromPath(path string) string {
 	if request.MatchPathSuffix(path, "/embeddings") {
 		return embeddingsAPI
 	}
+	if request.MatchPathSuffix(path, "/audio/speech") {
+		return audioSpeechAPI
+	}
+	if request.MatchPathSuffix(path, "/audio/transcriptions") {
+		return audioTranscriptionsAPI
+	}
+	if request.MatchPathSuffix(path, "/images/generations") {
+		return imagesGenerationsAPI
+	}
+	if request.MatchPathSuffix(path, "/inference") {
+		return inferenceAPI
+	}
 
 	// Default to completions API for backward compatibility with existing clients and integration tests
 	return completionsAPI
@@ -242,6 +269,12 @@ func extractRequestBody(apiType string, rawBody []byte) (*fwkrh.InferenceRequest
 			return &fwkrh.InferenceRequestBody{Embeddings: &embeddings}, nil
 		}
 		return nil, errors.New("invalid embeddings request: must have input field")
+
+	case audioSpeechAPI, audioTranscriptionsAPI, imagesGenerationsAPI, inferenceAPI:
+		// Multimodal endpoints: pass through without strict validation.
+		// The routing sidecar or localized architecture filters will handle these requests.
+		return &fwkrh.InferenceRequestBody{}, nil
+
 	default:
 		return nil, errors.New("unsupported API endpoint")
 	}

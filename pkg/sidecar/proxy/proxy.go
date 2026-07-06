@@ -31,6 +31,7 @@ import (
 
 	"github.com/go-logr/logr"
 	lru "github.com/hashicorp/golang-lru/v2"
+	"github.com/llm-d/llm-d-router/pkg/common"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"golang.org/x/sync/errgroup"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -113,14 +114,14 @@ const (
 	APITypeChatCompletions APIType = iota
 	// APITypeResponses is the Responses API (/v1/responses)
 	APITypeResponses
-	// APITypeGenerate is vLLM's token-in generate API (/inference/v1/generate)
-	APITypeGenerate
 	// APITypeAudioSpeech is the Audio Speech API (/v1/audio/speech)
 	APITypeAudioSpeech
 	// APITypeAudioTranscriptions is the Audio Transcriptions API (/v1/audio/transcriptions)
 	APITypeAudioTranscriptions
 	// APITypeImagesGenerations is the Images Generations API (/v1/images/generations)
 	APITypeImagesGenerations
+	// APITypeGenerate is vLLM's token-in generate API (/inference/v1/generate)
+	APITypeGenerate
 )
 
 // String implements fmt.Stringer so structured logs show readable API names.
@@ -130,14 +131,14 @@ func (a APIType) String() string {
 		return "chat_completions"
 	case APITypeResponses:
 		return "responses"
-	case APITypeGenerate:
-		return "generate"
 	case APITypeAudioSpeech:
 		return "audio_speech"
 	case APITypeAudioTranscriptions:
 		return "audio_transcriptions"
 	case APITypeImagesGenerations:
 		return "images_generations"
+	case APITypeGenerate:
+		return "generate"
 	default:
 		return fmt.Sprintf("APIType(%d)", int(a))
 	}
@@ -514,15 +515,15 @@ func (s *Server) createRoutes() *http.ServeMux {
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	mux.HandleFunc("POST "+ChatCompletionsPath, s.disaggregatedPrefillHandler(APITypeChatCompletions))
-	mux.HandleFunc("POST "+CompletionsPath, s.disaggregatedPrefillHandler(APITypeChatCompletions))
+	mux.HandleFunc("POST "+common.ChatCompletionsPath, s.disaggregatedPrefillHandler(APITypeChatCompletions))
+	mux.HandleFunc("POST "+common.CompletionsPath, s.disaggregatedPrefillHandler(APITypeChatCompletions))
+	mux.HandleFunc("POST "+common.ResponsesPath, s.disaggregatedPrefillHandler(APITypeResponses))
+	mux.HandleFunc("POST "+common.AudioSpeechPath, s.disaggregatedPrefillHandler(APITypeAudioSpeech))
+	mux.HandleFunc("POST "+common.AudioTranscriptionsPath, s.disaggregatedPrefillHandler(APITypeAudioTranscriptions))
+	mux.HandleFunc("POST "+common.ImagesGenerationsPath, s.disaggregatedPrefillHandler(APITypeImagesGenerations))
+	mux.HandleFunc("POST "+common.InferencePath, s.inferenceHandler)
 	mux.HandleFunc("POST "+MessagesPath, s.disaggregatedPrefillHandler(APITypeChatCompletions))
-	mux.HandleFunc("POST "+ResponsesPath, s.disaggregatedPrefillHandler(APITypeResponses))
 	mux.HandleFunc("POST "+GeneratePath, s.disaggregatedPrefillHandler(APITypeGenerate))
-	mux.HandleFunc("POST "+AudioSpeechPath, s.disaggregatedPrefillHandler(APITypeAudioSpeech))
-	mux.HandleFunc("POST "+AudioTranscriptionsPath, s.disaggregatedPrefillHandler(APITypeAudioTranscriptions))
-	mux.HandleFunc("POST "+ImagesGenerationsPath, s.disaggregatedPrefillHandler(APITypeImagesGenerations))
-	mux.HandleFunc("POST "+InferencePath, s.inferenceHandler)
 
 	s.decoderProxy = s.createDecoderProxyHandler(s.config.DecoderURL, s.config.InsecureSkipVerifyForDecoder)
 

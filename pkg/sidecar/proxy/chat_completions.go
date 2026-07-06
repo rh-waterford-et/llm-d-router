@@ -45,12 +45,6 @@ const (
 	// ResponsesPath is the OpenAI Responses API path
 	ResponsesPath = "/v1/responses"
 
-	// MessagesPath is the Anthropic Messages API path
-	MessagesPath = "/v1/messages"
-
-	// GeneratePath is vLLM's token-in generate endpoint
-	GeneratePath = "/inference/v1/generate"
-
 	// AudioSpeechPath is the OpenAI-compatible text-to-speech path
 	AudioSpeechPath = "/v1/audio/speech"
 
@@ -62,6 +56,11 @@ const (
 
 	// InferencePath is the custom inference endpoint with routing hints
 	InferencePath = "/v1/inference"
+	// MessagesPath is the Anthropic Messages API path
+	MessagesPath = "/v1/messages"
+	// GeneratePath is vLLM's token-in generate endpoint
+	GeneratePath = "/inference/v1/generate"
+
 )
 
 func openAIAPIAttr(apiType APIType) attribute.KeyValue {
