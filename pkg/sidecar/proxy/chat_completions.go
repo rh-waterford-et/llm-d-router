@@ -50,6 +50,18 @@ const (
 
 	// GeneratePath is vLLM's token-in generate endpoint
 	GeneratePath = "/inference/v1/generate"
+
+	// AudioSpeechPath is the OpenAI-compatible text-to-speech path
+	AudioSpeechPath = "/v1/audio/speech"
+
+	// AudioTranscriptionsPath is the OpenAI-compatible speech-to-text path
+	AudioTranscriptionsPath = "/v1/audio/transcriptions"
+
+	// ImagesGenerationsPath is the OpenAI-compatible image generation path
+	ImagesGenerationsPath = "/v1/images/generations"
+
+	// InferencePath is the custom inference endpoint with routing hints
+	InferencePath = "/v1/inference"
 )
 
 func openAIAPIAttr(apiType APIType) attribute.KeyValue {
