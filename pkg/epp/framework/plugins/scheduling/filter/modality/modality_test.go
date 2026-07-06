@@ -28,15 +28,15 @@ import (
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/filter/modality"
 )
 
-func createModalityEndpoint(name string, labels map[string]string) fwksched.Endpoint {
+func createModalityEndpoint(labels map[string]string) fwksched.Endpoint {
 	return fwksched.NewEndpoint(&fwkdl.EndpointMetadata{Labels: labels}, &fwkdl.Metrics{}, nil)
 }
 
 func TestModalityFilter_TextPathPassesAll(t *testing.T) {
 	f := modality.NewModalityFilter()
 	endpoints := []fwksched.Endpoint{
-		createModalityEndpoint("text-pod", map[string]string{common.ModelArchLabel: common.ModelArchAutoRegressLLM}),
-		createModalityEndpoint("tts-pod", map[string]string{common.ModelArchLabel: common.ModelArchOmniLLM}),
+		createModalityEndpoint(map[string]string{common.ModelArchLabel: common.ModelArchAutoRegressLLM}),
+		createModalityEndpoint(map[string]string{common.ModelArchLabel: common.ModelArchOmniLLM}),
 	}
 	request := &fwksched.InferenceRequest{
 		Headers: map[string]string{common.EnvoyPathHeader: "/v1/chat/completions"},
@@ -49,10 +49,10 @@ func TestModalityFilter_TextPathPassesAll(t *testing.T) {
 func TestModalityFilter_AudioSpeechFiltersCorrectly(t *testing.T) {
 	f := modality.NewModalityFilter()
 	endpoints := []fwksched.Endpoint{
-		createModalityEndpoint("omni-pod", map[string]string{common.ModelArchLabel: common.ModelArchOmniLLM}),
-		createModalityEndpoint("tts-pod", map[string]string{common.ModelArchLabel: common.ModelArchAutoRegressTTS}),
-		createModalityEndpoint("text-pod", map[string]string{common.ModelArchLabel: common.ModelArchAutoRegressLLM}),
-		createModalityEndpoint("diffusion-pod", map[string]string{common.ModelArchLabel: common.ModelArchDiffusion}),
+		createModalityEndpoint(map[string]string{common.ModelArchLabel: common.ModelArchOmniLLM}),
+		createModalityEndpoint(map[string]string{common.ModelArchLabel: common.ModelArchAutoRegressTTS}),
+		createModalityEndpoint(map[string]string{common.ModelArchLabel: common.ModelArchAutoRegressLLM}),
+		createModalityEndpoint(map[string]string{common.ModelArchLabel: common.ModelArchDiffusion}),
 	}
 	request := &fwksched.InferenceRequest{
 		Headers: map[string]string{common.EnvoyPathHeader: common.AudioSpeechPath},
@@ -65,8 +65,8 @@ func TestModalityFilter_AudioSpeechFiltersCorrectly(t *testing.T) {
 func TestModalityFilter_QueryParamsStripped(t *testing.T) {
 	f := modality.NewModalityFilter()
 	endpoints := []fwksched.Endpoint{
-		createModalityEndpoint("omni-pod", map[string]string{common.ModelArchLabel: common.ModelArchOmniLLM}),
-		createModalityEndpoint("text-pod", map[string]string{common.ModelArchLabel: common.ModelArchAutoRegressLLM}),
+		createModalityEndpoint(map[string]string{common.ModelArchLabel: common.ModelArchOmniLLM}),
+		createModalityEndpoint(map[string]string{common.ModelArchLabel: common.ModelArchAutoRegressLLM}),
 	}
 	request := &fwksched.InferenceRequest{
 		Headers: map[string]string{common.EnvoyPathHeader: "/v1/audio/speech?model=tts-1"},
@@ -79,7 +79,7 @@ func TestModalityFilter_QueryParamsStripped(t *testing.T) {
 func TestModalityFilter_EmptyPath(t *testing.T) {
 	f := modality.NewModalityFilter()
 	endpoints := []fwksched.Endpoint{
-		createModalityEndpoint("pod-1", map[string]string{common.ModelArchLabel: common.ModelArchOmniLLM}),
+		createModalityEndpoint(map[string]string{common.ModelArchLabel: common.ModelArchOmniLLM}),
 	}
 	request := &fwksched.InferenceRequest{
 		Headers: map[string]string{},
@@ -92,9 +92,9 @@ func TestModalityFilter_EmptyPath(t *testing.T) {
 func TestModalityFilter_ImagesGenerationsFiltersDiffusion(t *testing.T) {
 	f := modality.NewModalityFilter()
 	endpoints := []fwksched.Endpoint{
-		createModalityEndpoint("diffusion-pod", map[string]string{common.ModelArchLabel: common.ModelArchDiffusion}),
-		createModalityEndpoint("text-pod", map[string]string{common.ModelArchLabel: common.ModelArchAutoRegressLLM}),
-		createModalityEndpoint("tts-pod", map[string]string{common.ModelArchLabel: common.ModelArchAutoRegressTTS}),
+		createModalityEndpoint(map[string]string{common.ModelArchLabel: common.ModelArchDiffusion}),
+		createModalityEndpoint(map[string]string{common.ModelArchLabel: common.ModelArchAutoRegressLLM}),
+		createModalityEndpoint(map[string]string{common.ModelArchLabel: common.ModelArchAutoRegressTTS}),
 	}
 	request := &fwksched.InferenceRequest{
 		Headers: map[string]string{common.EnvoyPathHeader: common.ImagesGenerationsPath},
