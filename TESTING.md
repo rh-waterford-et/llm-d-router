@@ -1,376 +1,538 @@
-# TESTING.md
+# Testing Guide
 
-## Test Tiers
+Single reference for the llm-d-router test suite. Covers every tier, how to run it, what it tests, and how to add new tests.
 
-| Tier | Functions | Files | Purpose |
-|---|---|---|---|
-| Unit: Framework & Plugins | 742 | 121 | Plugin contracts, scheduling logic, parsers, flow control plugins |
-| Unit: Flow Control | 93 | 20 | Queue admission, eviction, fairness, ordering, registry |
-| Unit: Sidecar | 41 | 17 | P/D sidecar proxy logic |
-| Unit: EPP Core | 120 | 18 | Datastore, config loading, metrics, scheduling engine, request control |
-| Unit: Common | 22 | 10 | Envoy chunking, path matching, shared utilities |
-| Integration (hermetic) | 24 | 12 | Full EPP pipeline in-process via envtest, no cluster required |
-| Integration (cluster) | 24 | 12 | Same suite against a real Kubernetes cluster (`KUBECONFIG` required) |
-| Integration (prediction server) | ~30 | 1 | Latency predictor client against a live prediction server (`PREDICTION_SERVER_URL` required) |
-| E2E: Router | 1 suite | 6 | Pod disruption, scale-to-zero, routing correctness on kind |
-| E2E: Sidecar | 1 suite | 2 | P/D disaggregation sidecar against a live cluster |
-| Benchmark: Tokenizer | 27 | 1 | Tokenizer throughput profiling |
-| Benchmark: Flow Control | ~10 | 1 | Flow control subsystem throughput |
+## Overview
 
-**Total test functions: ~1,110** across **239 test files**.
+The project uses a multi-tier testing strategy spanning unit tests, BDD behavioral specs, hermetic and cluster integration tests, end-to-end suites, acceptance tests, and benchmarks. Tests run inside a builder container; host Go is not required.
 
----
+| Tier | Description | Files | Runner |
+|------|-------------|-------|--------|
+| Unit: Framework & Plugins | Plugin contracts, scheduling logic, parsers, flow control | ~121 | `make test-unit-epp` |
+| Unit: Flow Control | Queue admission, eviction, fairness, ordering | ~20 | `make test-unit-epp` |
+| Unit: Sidecar | P/D sidecar proxy, connection handling | ~17 | `make test-unit-sidecar` |
+| Unit: EPP Core | Datastore, config, metrics, scheduling engine | ~18 | `make test-unit-epp` |
+| Unit: Common | Envoy chunking, path matching, utilities | ~10 | `make test-unit-epp` |
+| BDD: Scheduling | Ginkgo behavioral specs for the scheduler | new | `make test-bdd` |
+| BDD: Parsers | Ginkgo cross-parser behavioral specs | new | `make test-bdd` |
+| BDD: Flow Control | Ginkgo behavioral specs for admission/saturation | new | `make test-bdd` |
+| Integration: Hermetic | Full EPP pipeline via envtest, no cluster | ~12 | `make test-integration-hermetic` |
+| Integration: Cluster | Same suite against a real cluster | ~12 | `make test-integration` |
+| E2E: Router | Ginkgo against kind cluster with Envoy + simulators | ~6 | `make test-e2e` |
+| E2E: Coordinator | Ginkgo coordinator pipeline tests | ~6 | `make test-e2e` |
+| E2E: Sidecar | P/D disaggregation against live cluster | ~2 | `make test-e2e` |
+| Acceptance: Gherkin | Godog feature files with step definitions | new | `make test-acceptance` |
+| Benchmark: Tokenizer | Tokenizer throughput profiling | 1 | `make bench-tokenizer` |
+| Benchmark: Flow Control | Flow control subsystem throughput | 1 | manual |
 
 ## Test Structure
 
 ```
+pkg/                                 # Unit tests co-located with production code
+  common/                            # Envoy, certs, logging, routing, request
+  epp/
+    config/                          # Config loading
+    controller/                      # K8s reconciler
+    datalayer/                       # Data graph, factory, manager
+    datastore/                       # Datastore, model rewrite
+    flowcontrol/                     # Queue, eviction, fairness, ordering
+      benchmark/                     # Flow control benchmarks
+    framework/
+      interface/                     # Interface tests
+      plugins/
+        datalayer/                   # Attribute, discovery, extractor, source
+        flowcontrol/                 # Eviction, fairness, ordering, saturation, limits
+        requestcontrol/              # Admitters, data producers, request headers
+        requesthandling/parsers/     # OpenAI, Anthropic, VertexAI, passthrough, vLLM
+        scheduling/                  # Filters, pickers, scorers, profile handlers
+    metrics/                         # Prometheus metric tests + testdata fixtures
+    scheduling/                      # Scheduler engine + BDD specs
+    server/                          # Controller config, gRPC, metrics, options
+    util/                            # Pod, env, request header utils
+  coordinator/                       # Coordinator pipeline, gateway, server
+  sidecar/proxy/                     # Sidecar unit tests (Ginkgo BDD)
+
 test/
-├── e2e/
-│   ├── e2e_suite_test.go          — Ginkgo suite bootstrap
-│   ├── e2e_test.go                — core routing scenarios
-│   ├── disruption_test.go         — pod kill, EPP restart, scale-to-zero
-│   ├── configs_test.go            — config smoke tests
-│   ├── requests_test.go           — request shape variations
-│   ├── setup_test.go              — cluster and image setup helpers
-│   └── utils_test.go              — shared e2e utilities
-├── integration/
-│   ├── suite_test.go              — suite entry point (build tag: integration_tests)
-│   ├── epp_test.go                — EPP integration entry (build tag: integration_tests)
-│   └── epp/
-│       ├── harness.go             — in-process EPP server harness (envtest)
-│       ├── hermetic_test.go       — HTTP path: malformed JSON, streaming, buffering
-│       ├── grpc_test.go           — gRPC path: protocol boundaries, error handling
-│       ├── session_affinity_test.go
-│       ├── datalayer_integration_test.go
-│       ├── dynamic_attributes_test.go
-│       ├── k8s_datasource_integration_test.go  — skipped under -short
-│       ├── runtime_notification_test.go
-│       ├── runtime_polling_test.go              — skipped under -short
-│       ├── request_attribute_reporter_test.go
-│       ├── request_attribute_reporter_streaming_test.go
-│       ├── wellknown_configs_test.go
-│       └── e2e_config_smoke_test.go
-├── sidecar/
-│   ├── e2e/                       — P/D sidecar end-to-end tests
-│   ├── mock/                      — mock chat completions and generic handlers
-│   └── utils/                     — shared sidecar test utilities
-├── profiling/
-│   └── tokenizerbench/
-│       └── benchmark_test.go      — 27 tokenizer benchmark functions
-├── scripts/
-│   ├── e2e-common.sh
-│   └── test-e2e-router.sh
-└── testdata/                      — shared YAML fixtures
-
-pkg/
-├── common/                        — 22 functions, 10 files
-│   └── envoy/                     — chunking (at-limit, off-by-one), path/header matching
-├── epp/
-│   ├── flowcontrol/               — 93 functions, 20 files
-│   │   ├── integration_test.go    — capacity, zombie TTL, concurrent saturation reads
-│   │   ├── benchmark/             — flow control throughput benchmarks
-│   │   ├── config_test.go         — nil config handling
-│   │   ├── controller/            — exactly-once finalization, concurrency shutdown race
-│   │   ├── eviction/              — eviction queue PopN bounds, evictor nil safety
-│   │   ├── framework/plugins/     — queue conformance, EDF/SLO deadline ordering
-│   │   └── registry/              — leasing lifecycle, managed queue delta invariants
-│   ├── framework/                 — 742 functions, 121 files
-│   │   ├── interface/             — type system (MaxUint32 bounds, NaN, negative IDs)
-│   │   └── plugins/
-│   │       ├── scheduling/
-│   │       │   ├── filter/        — bylabel, modality, prefixcacheaffinity, sloheadroomtier
-│   │       │   ├── scorer/        — nohitlru, prefix cache, session affinity scorers
-│   │       │   └── picker/        — maxscore, weightedrandom zero-weight edge case
-│   │       ├── requestcontrol/
-│   │       │   ├── admitter/      — probabilisticadmitter (zero/negative thresholds)
-│   │       │   ├── preadmitter/   — agent identity
-│   │       │   └── dataproducer/  — predictedlatency, inflightload underflow, tokenizer, burstprefix
-│   │       ├── flowcontrol/       — saturation detectors, EDF/SLO ordering, fairness
-│   │       └── requesthandling/parsers/
-│   │                              — openai, anthropic, vllmhttp, vertexai, grpc
-│   ├── datastore/                 — 20 functions, 2 files — concurrent pool ops, active-port parsing
-│   ├── config/                    — 12 functions, 4 files — loader defaults, nil DataLayer injection
-│   ├── metrics/                   — 24 functions, 3 files
-│   ├── scheduling/                — 14 functions, 4 files — scheduler engine
-│   └── requestcontrol/            — 26 functions, 4 files — request lifecycle director
-└── sidecar/                       — 41 functions, 17 files
-    └── ...                        — P/D proxy, sidecar integration tests
+  acceptance/                        # Godog Gherkin acceptance tests
+    features/
+      scheduling/                    # Routing, filter chain features
+      parsing/                       # OpenAI, Anthropic features
+      flowcontrol/                   # Admission features
+  e2e/                               # Router E2E (Ginkgo + kind)
+  coordinator/e2e/                   # Coordinator E2E
+  sidecar/e2e/                       # Sidecar E2E
+  integration/                       # Hermetic + cluster integration
+    epp/                             # Hermetic integration test files
+  ears/                              # EARS requirement package
+  profiling/tokenizerbench/          # Tokenizer benchmarks
+  utils/                             # Shared test utilities
+  scripts/                           # E2E runner scripts
+  testdata/                          # Shared YAML fixtures
 ```
-
----
 
 ## Running Tests
 
-### Standard targets (run inside the builder container)
+### Primary Targets
+
+| Target | What it runs |
+|--------|-------------|
+| `make test` | Unit + E2E |
+| `make test-unit` | All unit tests (EPP + sidecar) |
+| `make test-unit-epp` | EPP unit tests with coverage |
+| `make test-unit-sidecar` | Sidecar unit tests with coverage |
+| `make test-bdd` | BDD behavioral specs (Ginkgo) |
+| `make test-acceptance` | Gherkin acceptance tests (godog) |
+| `make test-all` | Unit + BDD + acceptance |
+| `make test-integration-hermetic` | Hermetic integration (envtest) |
+| `make test-integration` | Cluster integration (requires KUBECONFIG) |
+| `make test-e2e` | Build images + run E2E |
+| `make test-e2e-run` | Run E2E (images already available) |
+| `make test-coverage` | Unit tests with coverage output |
+| `make presubmit` | Format + lint + vulncheck + latest-tags |
+
+### Targeted Runs
+
+Run a specific test by name pattern and component:
 
 ```bash
-make test                       # unit + e2e
-make test-unit                  # unit only (epp + sidecar)
-make test-coverage              # unit with coverage output
-make presubmit                  # full pre-merge gate: format, lint, unit tests
+make test-filter PATTERN=TestSchedule TYPE=epp
+make test-filter PATTERN=TestProxy TYPE=sidecar
 ```
 
-### Integration tests
+Run hermetic integration with a pattern filter:
 
 ```bash
-# Hermetic — in-process envtest, no cluster required
-make test-integration-hermetic
+make test-integration-hermetic PATTERN=TestHermetic
+```
 
-# Against a real cluster (requires KUBECONFIG)
+### Integration Tests
+
+Hermetic integration tests use envtest (no cluster required):
+
+```bash
+make test-integration-hermetic
+```
+
+Cluster integration tests require `KUBECONFIG` and installed CRDs, gated by the `integration_tests` build tag:
+
+```bash
 make test-integration
 ```
 
-The integration suite is gated by a build tag — it does not run with a plain `go test ./...`:
+### E2E Tests
 
-```bash
-# Equivalent manual invocation
-go test -tags integration_tests ./test/integration/...
-```
+E2E tests create a kind cluster and deploy real components. Environment variables:
 
-Several tests within the integration suite skip when `-short` is set:
-
-```bash
-go test -short -tags integration_tests ./test/integration/...
-# skips: k8s_datasource_integration_test.go, runtime_polling_test.go (5 tests)
-```
-
-### E2E tests
-
-```bash
-make test-e2e                   # builds images then runs e2e suite
-make test-e2e-run               # skips build, runs against pre-pulled images
-```
-
-### Prediction server integration (env-gated)
-
-Tests in `pkg/epp/framework/plugins/requestcontrol/dataproducer/predictedlatency/latencypredictorclient/` skip automatically when the required env vars are absent:
-
-```bash
-PREDICTION_SERVER_URL=http://... TRAINING_SERVER_URL=http://... go test ./pkg/epp/framework/plugins/requestcontrol/dataproducer/predictedlatency/latencypredictorclient/...
-```
-
-### Targeted runs
-
-```bash
-make test-filter PATTERN=TestShardProcessor TYPE=epp
-make test-filter PATTERN=TestOpenAIParser   TYPE=epp
-```
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `E2E_NUM_PROCS` | 5 | Ginkgo parallel processes |
+| `E2E_KEEP_CLUSTER_ON_FAILURE` | false | Keep kind cluster on test failure |
+| `NAMESPACE` | (generated) | Kubernetes namespace |
+| `HF_TOKEN` | (none) | HuggingFace token for model pulls |
 
 ### Benchmarks
 
 ```bash
-# Tokenizer
-cd test/profiling/tokenizerbench && go test -bench=. -benchmem
-
-# Flow control
-cd pkg/epp/flowcontrol/benchmark && go test -bench=. -benchmem
+make bench-tokenizer                    # Tokenizer throughput (requires kind + EPP)
+go test -bench=. -benchmem ./pkg/epp/flowcontrol/benchmark/  # Flow control (in builder)
+go test -bench=. -benchmem ./pkg/epp/scheduling/             # Scheduler (in builder)
 ```
 
----
+### Acceptance Tests
+
+Gherkin acceptance tests use godog with `.feature` files:
+
+```bash
+make test-acceptance
+```
+
+Run a specific scenario:
+
+```bash
+go test -v -run "TestAcceptance/Route_to_the_least-loaded_endpoint" ./test/acceptance/...
+```
 
 ## Tier Details
 
-### Tier 1 — Unit: Framework & Plugins
-**Location:** `pkg/epp/framework/` | **Run:** `make test-unit`
+### Unit: Framework & Plugins
 
-| Category | What is tested |
-|---|---|
-| Parsers | OpenAI, Anthropic, vLLM HTTP, VertexAI gRPC — valid paths, nil/empty bodies, malformed JSON, invalid formats |
-| Type system | Token ID bounds (MaxUint32 accepted, MaxUint32+1 rejected), negative values, NaN, non-integers |
-| Filters | `bylabel`, `modality`, `prefixcacheaffinity`, `sessionaffinity`, `sloheadroomtier` — nil/empty endpoint slices, out-of-range config parameters |
-| Scorers | `nohitlru`, `prefix`, `preciseprefixcache`, `sessionaffinity` — nil/empty slices, zero-weight exclusion |
-| Admitters | `probabilisticadmitter` — zero and negative thresholds, power, and K values |
-| Data producers | `inflightload` underflow guards, `predictedlatency` range validation (0.0, 1.0, negative, over-max), `tokenizer` byte-boundary straddling |
-| Saturation detectors | `concurrency` and `utilization` — invalid headroom, invalid thresholds, saturation caps at 1.0, empty candidate list (fail-closed) |
-| Path matching | Segment-boundary (`/`), gRPC dot-boundary (`.`), trailing slashes |
+Tests in `pkg/epp/framework/plugins/` cover the plugin model. Each plugin type (filter, scorer, picker, admitter, data producer, saturation detector) has tests verifying its contract.
 
-### Tier 2 — Unit: Flow Control
-**Location:** `pkg/epp/flowcontrol/` | **Run:** `make test-unit`
+Parsers in `pkg/epp/framework/plugins/requesthandling/parsers/` test request parsing for OpenAI, Anthropic, VertexAI, passthrough, and vLLM formats. Each parser test verifies model extraction, prompt/message parsing, error handling for malformed input, and response format consistency.
 
-| Category | What is tested |
-|---|---|
-| Boundary values | Exactly at capacity, one over, one under — for shard bytes, shard requests, band bytes, band requests |
-| Capacity enforcement | Per-band and global byte limits; global rejects even when per-band has room |
-| Concurrent reads | Saturation value stays in `[0.0, 1.0]` under concurrent goroutine reads; returns to exactly 0 after all ops complete |
-| Exactly-once finalization | Dispatch vs. expiry race: finalization handler called exactly once regardless of race outcome |
-| Concurrent shutdown | No races or panics when requests enqueue concurrently with controller shutdown |
-| Nil safety | `Submit(nil)`, double-evict, evict with nil channel |
-| Zombie capacity | Expired TTL items hold capacity until cleanup sweep, falsely rejecting new requests |
-| Queue conformance | Invalid handle, nil handle, peek on empty, cleanup on empty, drain on empty |
-| Delta invariants | Propagated length and byte-size deltas exactly match queue size changes across all operations (add, remove, cleanup, drain) |
-| Ordering | EDF and SLO deadline nil-item ordering (a nil, b nil, both nil) |
+Scheduling plugin tests in `pkg/epp/framework/plugins/scheduling/` cover filters (by-label, modality, prefix cache affinity, session affinity, SLO headroom), scorers (KV cache, queue depth, prefix, LoRA affinity, session affinity, active requests, load-aware), and pickers (max score, random, weighted random).
 
-### Tier 3 — Unit: Sidecar
-**Location:** `pkg/sidecar/` | **Run:** `make test-unit`
+### Unit: Flow Control
 
-41 test functions across 17 files covering the P/D disaggregation sidecar proxy, connection handling, and version negotiation.
+Tests in `pkg/epp/flowcontrol/` verify queue admission, eviction, fairness, and ordering. Boundary value testing uses an explicit convention with cases covering exactly-at-capacity, one-over, and one-under for shard bytes, shard requests, band bytes, and band requests.
 
-### Tier 4 — Unit: EPP Core
-**Location:** `pkg/epp/datastore/`, `pkg/epp/config/`, `pkg/epp/metrics/`, `pkg/epp/scheduling/`, `pkg/epp/requestcontrol/` | **Run:** `make test-unit`
+Key patterns:
+- Concurrent saturation reads verify the value stays in [0.0, 1.0]
+- Exactly-once finalization races dispatch against expiry
+- Delta invariants ensure propagated deltas exactly match queue size changes
+- Zombie capacity tests verify expired TTL items hold capacity until cleanup
 
-| Category | What is tested |
-|---|---|
-| Datastore | Concurrent pool set with nil, empty active-ports annotation, invalid/negative port values, no-deadlock under concurrent write |
-| Config loading | Nil DataLayer injects defaults, zero MaxBytes, missing fields default correctly |
-| Scheduling engine | Profile selection, weighted scorer composition |
-| Request control | Lifecycle sequencing (PreAdmit → DataProduce → Admit → Schedule → PreRequest → Response) |
+### Unit: Sidecar
 
-### Tier 5 — Unit: Common
-**Location:** `pkg/common/` | **Run:** `make test-unit`
+Tests in `pkg/sidecar/proxy/` use Ginkgo BDD (the canonical BDD pattern in this repo). They cover the P/D disaggregation sidecar proxy including connection handling, version negotiation, allowlist validation, and connector variants (NIXL, shared storage, Mooncake, P2P).
 
-| Category | What is tested |
-|---|---|
-| Chunking | Body at limit, one below, one above, exactly 2x limit — off-by-one coverage of `BodyByteLimit` |
-| Path matching | Segment-boundary matching, gRPC dot-boundary, trailing slashes, nil headers map |
+### Unit: EPP Core
 
-### Tier 6 — Integration: Hermetic
-**Location:** `test/integration/epp/` | **Run:** `make test-integration-hermetic`
+Tests in `pkg/epp/datastore/`, `pkg/epp/config/`, `pkg/epp/metrics/`, `pkg/epp/scheduling/` cover the core EPP infrastructure. Datastore tests cover concurrent pool set with nil, empty active-ports annotation, and invalid port values. Scheduling engine tests cover profile selection and weighted scorer composition.
 
-Full EPP server started in-process using `envtest` via `test/integration/epp/harness.go`. No Kubernetes cluster required. Tests send raw ext-proc requests and assert on the EPP response — no mocking of the scheduler or plugin chain.
+### Unit: Common
 
-- Malformed JSON body through the full HTTP path
-- Invalid gRPC payload and unsupported gRPC method at the protocol boundary
-- Streaming response buffering with invalid JSON and empty EOS chunks
-- Session affinity across multiple requests
-- Dynamic attribute updates mid-stream
-- Data layer polling and k8s notification sources
-- Well-known config variants (standalone, standard, with/without CRDs)
+Tests in `pkg/common/` cover Envoy chunking (body at limit, one below, one above, exactly 2x), path matching (segment boundaries, gRPC dots, trailing slashes), TLS certificate handling, logging configuration, and request token utilities.
 
-### Tier 7 — Integration: Cluster
-**Location:** `test/integration/epp/` | **Run:** `make test-integration`
+### BDD: Behavioral Specs
 
-Same suite as Tier 6, run against a real Kubernetes cluster. Requires `KUBECONFIG` set and CRDs installed. Build tag: `integration_tests`.
+Ginkgo BDD specs complement existing unit tests with structured behavioral specifications. Located in the same packages as the unit tests, named `*_bdd_test.go`.
 
-### Tier 8 — Integration: Prediction Server
-**Location:** `pkg/epp/framework/plugins/requestcontrol/dataproducer/predictedlatency/latencypredictorclient/`
+Scheduling BDD specs (`pkg/epp/scheduling/scheduling_bdd_test.go`) cover:
+- No candidate endpoints returns an error
+- Single endpoint selection
+- Multi-endpoint scoring and selection
+- Filter elimination behavior
 
-Gated on env vars — all tests call `t.Skip` when `PREDICTION_SERVER_URL` is unset. Tests bulk prediction, prefix cache integration, HTTP fallback, performance benchmarking, and training data flushing against a live predictor service.
+Parser BDD specs (`pkg/epp/framework/plugins/requesthandling/parsers/parsers_bdd_test.go`) cover:
+- Cross-parser model extraction
+- Chat completions message parsing
+- Malformed JSON error handling
+- Empty body handling
 
-```bash
-PREDICTION_SERVER_URL=http://... TRAINING_SERVER_URL=http://... go test ./pkg/.../latencypredictorclient/...
-```
+Flow control BDD specs (`pkg/epp/flowcontrol/flowcontrol_bdd_test.go`) cover:
+- Saturation detection contracts
+- Boundary value admission
 
-### Tier 9 — E2E: Router
-**Location:** `test/e2e/` | **Run:** `make test-e2e`
+### Integration: Hermetic
 
-Ginkgo suite against a kind cluster with a real EPP, Envoy, and inference simulators:
+Tests in `test/integration/epp/` start a real EPP gRPC server in-process via envtest. The `TestHarness` builder pattern configures the server with options like `WithStandardMode()`, `WithStandaloneMode()`, `WithConfigText()`, `WithTracing()`. Tests send raw ext-proc requests and assert on EPP responses without mocking the scheduler or plugin chain.
 
-| Scenario | Assertion |
-|---|---|
-| Pod killed mid-request | EPP recovers and routes subsequent requests |
-| Pod killed during streaming | Request does not hang |
-| All pods gone | Returns 503 |
-| EPP killed during inflight requests | Recovers after restart |
-| Scale-to-zero and back | 503s during empty pool; traffic resumes after scale-up |
-| Config variations | Well-known configs produce expected routing behavior |
+Scenarios include malformed JSON, invalid gRPC payloads, streaming response buffering, session affinity, dynamic attribute updates, data layer polling, Kubernetes notification sources, request attribute reporting, and well-known config variants.
 
-### Tier 10 — E2E: Sidecar
-**Location:** `test/sidecar/e2e/` | **Run:** `make test-e2e` (sidecar target)
+### Integration: Cluster
 
-End-to-end tests for the P/D disaggregation sidecar. Requires a live cluster with prefill and decode pods. Validates KV-cache transfer and decode pod coordination.
+The same suite as hermetic integration but against a real Kubernetes cluster. Requires `KUBECONFIG` and installed CRDs. Gated by the `integration_tests` build tag.
 
-### Tier 11 — Benchmarks
-**Locations:**
-- `test/profiling/tokenizerbench/` — 27 functions, tokenizer throughput across request sizes
-- `pkg/epp/flowcontrol/benchmark/` — flow control subsystem throughput
+### E2E: Router
 
-Not gated in CI. Run manually to profile EPP CPU budget before and after changes to the scheduler hot path.
+A Ginkgo suite in `test/e2e/` against a kind cluster with real EPP, Envoy, and inference simulators. Scenarios:
+- EPP recovery after a pod is killed mid-request
+- Streaming requests don't hang after pod death
+- 503 responses when all pods are gone
+- EPP recovery after being killed during inflight requests
+- Scale-to-zero produces 503s with traffic resuming after scale-up
+- Well-known configs produce expected routing behavior
 
----
+Uses `testWrapper()` for lifecycle management (namespace creation, Envoy deployment, RBAC setup, cleanup).
+
+### E2E: Coordinator
+
+A Ginkgo suite in `test/coordinator/e2e/coordinator/` testing the coordinator pipeline. Flat list of `It` blocks under a `Describe`, each calling `runCoordinatorPipeline()` for setup/teardown.
+
+### E2E: Sidecar
+
+A Ginkgo suite in `test/sidecar/e2e/` testing P/D disaggregation against a live cluster with prefill and decode pods.
+
+### Acceptance: Gherkin
+
+Godog acceptance tests in `test/acceptance/` use Gherkin `.feature` files with Go step definitions. Feature files describe user-facing behaviors in Given/When/Then format.
+
+Feature areas:
+- `features/scheduling/` - Basic routing, filter chain
+- `features/parsing/` - OpenAI requests, Anthropic requests
+- `features/flowcontrol/` - Admission and saturation
+
+### Benchmarks
+
+Tokenizer benchmarks in `test/profiling/tokenizerbench/` profile throughput across request sizes. Flow control benchmarks in `pkg/epp/flowcontrol/benchmark/` profile subsystem throughput. Scheduler benchmarks in `pkg/epp/scheduling/scheduler_bench_test.go` profile the scheduler hot path.
 
 ## Key Patterns
 
-### Boundary value pattern (flow control)
+### Table-Driven Tests
 
-Tests at admission boundaries use an explicit comment convention:
-
-```go
-// --- Boundary value tests ---
-{
-    name: "should allow when shard bytes exactly at capacity after add",
-    // bytes == capacity
-},
-{
-    name: "should deny when shard bytes one over capacity after add",
-    // bytes == capacity + 1
-},
-```
-
-Covers shard bytes, shard requests, band bytes, and band requests — eight cases in total.
-
-### Nil/empty slice safety (scheduling plugins)
-
-All filters and scorers open with nil and empty endpoint slice cases before any functional cases:
+The dominant unit test pattern. A slice of test structs with `name`, inputs, and expected outputs, iterated with `t.Run()`:
 
 ```go
-{"empty endpoints slice", []Endpoint{}, ...},
-{"nil endpoints slice", nil, ...},
+tests := []struct {
+    name    string
+    input   []fwksched.Endpoint
+    wantErr bool
+}{
+    {name: "no endpoints", input: nil, wantErr: true},
+    {name: "single endpoint", input: endpoints, wantErr: false},
+}
+for _, tc := range tests {
+    t.Run(tc.name, func(t *testing.T) { ... })
+}
 ```
 
-### Concurrency guard pattern (flow control)
+### Boundary Value Pattern
 
-Race conditions are tested with explicit goroutine barriers and invariant assertions:
+Flow control admission tests explicitly cover exactly-at-capacity, one-over, and one-under for each resource dimension.
+
+### Nil/Empty Slice Safety
+
+All scheduling filters and scorers begin with nil and empty endpoint slice test cases before functional tests.
+
+### Concurrency Guard
+
+Race conditions are tested with goroutine barriers and invariant assertions. The concurrency saturation detector verifies the saturation value stays in [0.0, 1.0] under concurrent access.
+
+### Delta Invariant
+
+Queue mutations assert that propagated length deltas exactly match queue size changes, catching off-by-one accounting errors.
+
+### Underflow Guard
+
+The in-flight request counter undergoes stress testing under concurrent add/remove to ensure it never goes negative.
+
+### Hermetic Integration Harness
+
+The `TestHarness` in `test/integration/epp/harness.go` starts a real EPP gRPC server in-process with configurable mode and optional tracing. Tests send raw ext-proc request streams and assert on responses without mocking.
+
+### Ginkgo BDD
+
+BDD tests use Ginkgo's Describe/Context/When/It hierarchy. Two import styles coexist:
+- Qualified imports (`ginkgo.Describe`) in E2E tests
+- Dot-imports (`. "github.com/onsi/ginkgo/v2"`) in sidecar and BDD specs
+
+`DescribeTable` with `Entry` for parameterized behavioral tests (see `pkg/sidecar/proxy/proxy_test.go`).
+
+### testWrapper Lifecycle
+
+E2E tests use `testWrapper()` in `test/e2e/setup_test.go` to inject `BeforeAll`/`AfterAll`/`AfterEach` hooks for namespace creation, Envoy deployment, and cleanup.
+
+### EARS Requirement Annotations
+
+See the EARS Requirements section below.
+
+## EARS Requirements
+
+EARS (Easy Approach to Requirements Syntax) provides structured requirement identifiers embedded in test files. The `test/ears/` package defines the convention.
+
+### Patterns
+
+| Pattern | Template | When to use |
+|---------|----------|-------------|
+| Ubiquitous | The [system] shall [response] | Always-on behavior |
+| Event-Driven | When [trigger], the [system] shall [response] | Triggered behavior |
+| Unwanted | If [condition], then the [system] shall [response] | Error/edge cases |
+| State-Driven | While [state], the [system] shall [response] | State-dependent behavior |
+| Optional | Where [feature], the [system] shall [response] | Feature-gated behavior |
+
+### Convention
+
+Requirements are defined as package-level vars in `test/ears/` with IDs following `{COMPONENT}-{SUBSYSTEM}-{NNN}`:
 
 ```go
-// TestConcurrentSaturationReads
-// Use a start barrier to ensure both goroutines begin concurrently.
-assert.InDelta(t, 0.0, saturation, 0.001,
-    "saturation must return to exactly 0 after all concurrent operations complete")
+var SchedNoEndpoints = ears.Req("SCHED-ROUTE-001", ears.PatternEventDriven,
+    "When no candidate endpoints exist, the scheduler shall return an error",
+    "scheduling")
 ```
 
-Exactly-once finalization is tested by racing dispatch and expiry simultaneously, then asserting the finalization handler fires exactly once.
-
-### Delta invariant pattern (managed queue)
-
-Queue mutation operations assert that propagated size deltas exactly match the actual size change — catches off-by-one errors in accounting:
+Tests reference requirements via `ears.TestRequirement(t, req)` (standard Go) or `ears.GinkgoRequirement(req)` (Ginkgo):
 
 ```go
-assert.Equal(t, expectedDelta, propagatedLengthDelta,
-    "The propagated length delta must exactly match the change in queue size")
+func TestNoEndpoints(t *testing.T) {
+    ears.TestRequirement(t, ears.SchedNoEndpoints)
+    // test body
+}
 ```
-
-### Underflow guard pattern (in-flight load)
-
-The in-flight request counter is stress-tested under concurrent add/remove and simulated crash scenarios to verify it never goes negative:
 
 ```go
-// TestInFlightLoadProducer_FlapDoesNotUnderflow
-// TestInFlightLoadProducer_CrashWithHighLoadDoesNotUnderflow
+It("returns an error", func() {
+    ears.GinkgoRequirement(ears.SchedNoEndpoints)
+    // test body
+})
 ```
 
-### Hermetic integration harness
+### Requirement Files
 
-`test/integration/epp/harness.go` starts a real EPP gRPC server in-process with configurable mode (standalone or standard) and optional tracing. Tests send raw ext-proc request streams and assert on the EPP response — no mocking of the scheduler or plugin chain:
+| File | Component | Count |
+|------|-----------|-------|
+| `test/ears/scheduling_requirements.go` | Scheduling | 7 |
+| `test/ears/flowcontrol_requirements.go` | Flow Control | 9 |
+| `test/ears/parsing_requirements.go` | Parsing | 8 |
+| `test/ears/plugin_requirements.go` | Plugin Contracts | 6 |
+
+### Generating a Report
 
 ```go
-h := NewTestHarness(t, WithStandaloneMode(...), WithConfigText(yaml))
-resp := h.SendRequest(req)
+import "github.com/llm-d/llm-d-router/test/ears"
+
+ears.GenerateReport(os.Stdout, ears.All())
 ```
 
----
+## BDD Test Conventions
 
-## Gaps & Known Limitations
+### File Naming
 
-| Gap | Severity | Notes |
-|---|---|---|
-| Prediction server tier not in CI | High | `PREDICTION_SERVER_URL`-gated tests (~30 functions) never run in standard PR gate; latency predictor regressions ship silently |
-| Sidecar e2e requires live GPU cluster | High | Kind-based sidecar tests exist but full P/D KV-cache transfer requires real hardware |
-| Active-Active HA + prefix routing | Medium | No automated test for cache-hit degradation under multi-replica EPP; covered only in docs |
-| Multimodal routing (TTS/STT) | Medium | Modality filter unit tests exist; no e2e against a real TTS/STT model endpoint |
-| E2E suite is a single Ginkgo `It` | Low | `test/e2e/e2e_test.go` — all scenarios in one block; individual scenario failures cannot be isolated or re-run independently |
-| Flow control benchmarks not in CI | Low | `pkg/epp/flowcontrol/benchmark/` runs manually only; no throughput regression gate |
-| `testing.Short()` skips undocumented | Low | 5+ integration tests skip silently under `-short`; no CI job documents which tier this corresponds to |
+BDD spec files are named `*_bdd_test.go` to coexist with existing table-driven `*_test.go` files. Suite bootstraps are `*_bdd_suite_test.go`.
 
----
+### Package Convention
+
+BDD specs use external test packages (e.g., `package scheduling_test`) to test through the public API.
+
+### Import Style
+
+BDD specs use dot-imports with lint suppression, matching the sidecar convention:
+
+```go
+import (
+    . "github.com/onsi/ginkgo/v2" //nolint:revive
+    . "github.com/onsi/gomega"    //nolint:revive
+)
+```
+
+### Suite Bootstrap
+
+Each package with BDD specs has a suite bootstrap:
+
+```go
+func TestSchedulingBDD(t *testing.T) {
+    RegisterFailHandler(Fail)
+    RunSpecs(t, "Scheduling BDD Suite")
+}
+```
+
+### Adding a BDD Spec
+
+1. If the package has no BDD suite, create `*_bdd_suite_test.go` with the bootstrap
+2. Create `*_bdd_test.go` with `Describe` > `When` > `It` structure
+3. Reference EARS requirements with `ears.GinkgoRequirement()`
+4. Run with `go test -v ./path/to/package/...` or `make test-bdd`
+
+## Gherkin Acceptance Tests
+
+### Feature File Convention
+
+Feature files live in `test/acceptance/features/{domain}/` using standard Gherkin syntax:
+
+```gherkin
+Feature: Basic request routing
+  Background:
+    Given a scheduler with default configuration
+
+  Scenario: No available endpoints
+    Given 0 endpoints
+    When a completion request arrives for model "test-model"
+    Then the scheduler returns an error
+```
+
+### Step Definitions
+
+Step definitions are in `test/acceptance/*_steps_test.go`. Each domain has its own step file:
+- `scheduling_steps_test.go` - Scheduler and routing steps
+- `parsing_steps_test.go` - Parser steps
+- `flowcontrol_steps_test.go` - Flow control steps
+- `common_steps_test.go` - Shared types and initialization
+
+Step functions use `context.Context` for state management between steps.
+
+### Adding an Acceptance Test
+
+1. Create or extend a `.feature` file in `test/acceptance/features/{domain}/`
+2. Add step definitions in `test/acceptance/{domain}_steps_test.go`
+3. Register steps in `initXxxSteps()` called from `InitializeScenario()`
+4. Run with `make test-acceptance`
+
+## Adding New Tests
+
+### Unit Test
+
+1. Create `*_test.go` in the same package as the code under test
+2. Use table-driven pattern with `t.Run()`
+3. Use `testify/assert` or `testify/require` for assertions
+4. Start with nil/empty input cases before functional cases
+5. Reference analogous tests in the same package for patterns
+
+### BDD Behavioral Spec
+
+1. Create `*_bdd_suite_test.go` if not already present
+2. Create `*_bdd_test.go` with Describe/When/It structure
+3. Add EARS requirements to `test/ears/{component}_requirements.go`
+4. Reference requirements with `ears.GinkgoRequirement()`
+
+### Integration Test
+
+1. Add to `test/integration/epp/` directory
+2. Use the `TestHarness` builder pattern
+3. Hermetic tests need no build tag; cluster tests need `integration_tests`
+4. Keep tests idempotent and read-only against the cluster
+
+### E2E Test
+
+1. Add scenarios to `test/e2e/e2e_test.go` or create new `*_test.go`
+2. Use `ginkgo.When()` with `ginkgo.Ordered` decorator
+3. Wrap with `testWrapper()` for lifecycle management
+4. Use `ginkgo.By()` for step narration
+
+### Acceptance Test
+
+1. Write `.feature` file in `test/acceptance/features/{domain}/`
+2. Add step definitions in `test/acceptance/{domain}_steps_test.go`
+3. Use `context.Context` for state between steps
+4. Run via `make test-acceptance`
+
+## Test Utilities
+
+| File | Purpose |
+|------|---------|
+| `test/utils/utils.go` | K8s object CRUD helpers, `TestConfig`, `EventuallyExists`, `PodReady` |
+| `test/utils/server.go` | gRPC test server helpers, bufconn-based `LaunchTestGRPCServer` |
+| `test/utils/parallel.go` | Port/namespace calculation for parallel Ginkgo processes |
+| `test/utils/network.go` | `GetFreePort()` utility |
+| `test/utils/dump.go` | `DumpPodsAndLogs` for test failure debugging |
+| `pkg/epp/util/testing/wrappers.go` | Test wrapper builders for Pod, InferenceObjective, InferencePool |
+| `test/ears/ears.go` | EARS requirement types, `TestRequirement()`, `GinkgoRequirement()` |
+| `test/ears/report.go` | EARS requirement Markdown report generator |
+
+## Gaps and Known Limitations
+
+| Gap | Severity |
+|-----|----------|
+| Prediction server tier not in CI | High |
+| Sidecar E2E requires live GPU cluster | High |
+| Active-Active HA + prefix routing not tested | Medium |
+| Multimodal routing (TTS/STT) no E2E | Medium |
+| E2E suite is a single Ginkgo `It` block | Low |
+| Flow control benchmarks not in CI | Low |
+| `testing.Short()` skips undocumented | Low |
 
 ## CI Schedule
 
-| Job | Trigger | Make target |
-|---|---|---|
+| Job | Trigger | Target |
+|-----|---------|--------|
 | Presubmit | Every PR | `make presubmit` |
 | Unit tests | Every PR | `make test-unit` |
 | Hermetic integration | Every PR | `make test-integration-hermetic` |
-| E2E | Every PR (images required) | `make test-e2e` |
+| E2E | Every PR | `make test-e2e` |
+| Lint | Every PR | `make lint` |
+| Coordinator unit | Every PR | `make -f Makefile.coord.mk test-unit` |
+| Coordinator E2E | Every PR | `make -f Makefile.coord.mk test-e2e-coordinator` |
 | Cluster integration | On-demand / nightly | `make test-integration` |
-| Sidecar e2e | On-demand | `make test-e2e` (sidecar) |
-| Prediction server integration | Manual only | `PREDICTION_SERVER_URL=... go test ./pkg/.../latencypredictorclient/...` |
+| Sidecar E2E | On-demand | `make test-e2e` (sidecar) |
+| Nightly perf | Daily 09:00 UTC | GKE + inference-perf |
+
+## Debugging
+
+Run a single test:
+
+```bash
+# In builder container (make builder-shell)
+go test -v -run TestSchedule ./pkg/epp/scheduling/
+
+# With race detector
+go test -v -race -run TestSchedule ./pkg/epp/scheduling/
+
+# With coverage
+go test -v -coverprofile=coverage.out ./pkg/epp/scheduling/
+go tool cover -html=coverage.out
+```
+
+Coverage comparison against a baseline:
+
+```bash
+make coverage-compare
+```

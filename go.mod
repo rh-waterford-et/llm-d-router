@@ -4,6 +4,7 @@ go 1.26.5
 
 require (
 	cloud.google.com/go/aiplatform v1.124.0
+	github.com/cucumber/godog v0.15.1
 	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/dgraph-io/ristretto/v2 v2.4.2

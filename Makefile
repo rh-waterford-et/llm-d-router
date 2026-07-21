@@ -315,6 +315,19 @@ bench-tokenizer: image-build-builder ## Run external tokenizer + scorer benchmar
 	@printf "Run 'EXTERNAL_TOKENIZER_ENABLED=true KV_CACHE_ENABLED=true make env-dev-kind' first.\n\n"
 	$(BUILDER_RUN_CLUSTER) 'go test -bench=. -benchmem -count=5 -timeout=5m ./test/profiling/tokenizerbench/'
 
+.PHONY: test-bdd
+test-bdd: image-build-builder ## Run BDD behavioral specs (Ginkgo)
+	@printf "\033[33;1m==== Running BDD Behavioral Tests ====\033[0m\n"
+	$(BUILDER_RUN) "go test -v -race ./pkg/epp/scheduling/... ./pkg/epp/flowcontrol/... ./pkg/epp/framework/plugins/requesthandling/parsers/..."
+
+.PHONY: test-acceptance
+test-acceptance: image-build-builder ## Run Gherkin acceptance tests (godog)
+	@printf "\033[33;1m==== Running Acceptance Tests ====\033[0m\n"
+	$(BUILDER_RUN) "go test -v ./test/acceptance/..."
+
+.PHONY: test-all
+test-all: test-unit test-bdd test-acceptance ## Run all non-cluster test tiers
+
 .PHONY: post-deploy-test
 post-deploy-test: ## Run post deployment tests
 	@echo "Success!"
