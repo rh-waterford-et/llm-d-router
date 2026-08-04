@@ -63,7 +63,7 @@ const (
 	eppNameEncode  = "e2e-epp-encode"
 	eppNamePrefill = "e2e-epp-prefill"
 	eppNameDecode  = "e2e-epp-decode"
-	
+
 	poolNameEncode  = "qwen3-vl-2b-instruct-encode-pool"
 	poolNamePrefill = "qwen3-vl-2b-instruct-prefill-pool"
 	poolNameDecode  = "qwen3-vl-2b-instruct-decode-pool"
@@ -92,7 +92,7 @@ const (
 	// role-scoped ext_proc clusters, and the three role-scoped InferencePools.
 	envoy3EPPManifest = "../../../../deploy/environments/dev/coordinator-e2e-infra/envoy-3-epp.yaml"
 	pool3EPPManifest  = "../../../../deploy/environments/dev/coordinator-e2e-infra/inference-pools-3-epp.yaml"
-	crdGIEPath = "../../../../deploy/components/crds-gie"
+	crdGIEPath        = "../../../../deploy/components/crds-gie"
 )
 
 var (
