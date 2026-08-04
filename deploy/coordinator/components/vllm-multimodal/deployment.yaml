@@ -27,6 +27,7 @@ spec:
         - "8000"
         - --mode
         - echo
+        - --log-http
         env:
         - name: POD_NAME
           valueFrom:
