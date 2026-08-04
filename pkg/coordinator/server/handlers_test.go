@@ -319,7 +319,7 @@ func TestHandlePassthrough_BinaryResponseProxied(t *testing.T) {
 	if rec.Header().Get("Content-Type") != "audio/mpeg" {
 		t.Fatalf("expected audio/mpeg Content-Type, got %q", rec.Header().Get("Content-Type"))
 	}
-	if string(rec.Body.Bytes()) != string(binaryBody) {
+	if rec.Body.String() != string(binaryBody) {
 		t.Fatalf("binary body was not proxied verbatim")
 	}
 }

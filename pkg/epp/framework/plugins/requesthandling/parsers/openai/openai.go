@@ -29,7 +29,6 @@ import (
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/common/request"
 	fwkplugin "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/plugin"
 	fwkrh "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/requesthandling"
-	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/parsers"
 )
 
 const (
@@ -119,7 +118,7 @@ func (p *OpenAIParser) ParseRequest(ctx context.Context, body []byte, headers ma
 		return nil, fmt.Errorf("error unmarshaling request bodyMap: %w", err)
 	}
 
-	path := getRequestPath(headers)
+	path := request.GetRequestPath(headers)
 	apiType := determineAPITypeFromPath(path)
 
 	extractedBody, err := extractRequestBody(apiType, body)
@@ -192,19 +191,6 @@ func (p *OpenAIParser) parseStreamResponse(chunk []byte) (*fwkrh.ParsedResponse,
 	return &fwkrh.ParsedResponse{Usage: usage}, nil
 }
 
-func getRequestPath(headers map[string]string) string {
-	if path := headers[parsers.MethodPathKey]; path != "" {
-		return path
-	}
-	if path := headers["x-original-path"]; path != "" {
-		return path
-	}
-	if path := headers["x-forwarded-path"]; path != "" {
-		return path
-	}
-	return "/v1/completions"
-}
-
 func determineAPITypeFromPath(path string) string {
 	path = strings.TrimSuffix(path, "/")
 	if strings.HasSuffix(path, "/conversations") {
@@ -222,16 +208,16 @@ func determineAPITypeFromPath(path string) string {
 	if strings.HasSuffix(path, "/embeddings") {
 		return embeddingsAPI
 	}
-	if request.MatchPathSuffix(path, "/audio/speech") {
+	if strings.HasSuffix(path, "/audio/speech") {
 		return audioSpeechAPI
 	}
-	if request.MatchPathSuffix(path, "/audio/transcriptions") {
+	if strings.HasSuffix(path, "/audio/transcriptions") {
 		return audioTranscriptionsAPI
 	}
-	if request.MatchPathSuffix(path, "/images/generations") {
+	if strings.HasSuffix(path, "/images/generations") {
 		return imagesGenerationsAPI
 	}
-	if request.MatchPathSuffix(path, "/inference") {
+	if strings.HasSuffix(path, "/inference") {
 		return inferenceAPI
 	}
 	// Default to completions API for backward compatibility with existing clients and integration tests

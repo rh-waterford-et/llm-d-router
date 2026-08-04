@@ -384,6 +384,7 @@ func allSubstitutions() map[string]string {
 		"${EPP_NAME}":                workerEPPName,
 		"${NAMESPACE}":               getNamespace(),
 		"${DECODE_ROLE}":             "decode",
+		"${MODEL_ARCH}":              "",
 	}
 }
 

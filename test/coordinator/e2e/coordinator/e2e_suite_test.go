@@ -1,12 +1,3 @@
-// The changes I made are basically in the following functions 
-// setupK8sCluster()
-// cleanNodeResolvConf()
-// fixCoreDNS()
-// updatestreamDNS()
-// parseNameserversFromFile()
-
-// The file is test/coordinator/e2e/coordinator/e2e_suite_test.go
-
 /*
 Copyright 2026 The llm-d Authors.
 
@@ -72,7 +63,7 @@ const (
 	eppNameEncode  = "e2e-epp-encode"
 	eppNamePrefill = "e2e-epp-prefill"
 	eppNameDecode  = "e2e-epp-decode"
-
+	
 	poolNameEncode  = "qwen3-vl-2b-instruct-encode-pool"
 	poolNamePrefill = "qwen3-vl-2b-instruct-prefill-pool"
 	poolNameDecode  = "qwen3-vl-2b-instruct-decode-pool"
@@ -330,7 +321,7 @@ func cleanNodeResolvConf() {
 // crashes CoreDNS or silently breaks DNS resolution for all pods.
 func fixCoreDNS() {
 	upstream := upstreamDNS()
-	ginkgo.By(fmt.Sprintf("Patching CoreDNS to forward to: %s", upstream))
+	ginkgo.By("Patching CoreDNS to forward to: " + upstream)
 
 	corefile := fmt.Sprintf(`.:53 {
     errors

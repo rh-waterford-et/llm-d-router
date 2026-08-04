@@ -48,7 +48,7 @@ func loadDefaultConfig() *configapi.EndpointPickerConfig {
 	queueScorerWeight := 2.0
 	kvCacheUtilizationScorerWeight := 2.0
 	prefixCacheScorerWeight := 3.0
-	multimodalScorerWeight := 4.0 // Higher priority weight for multimodal path matching
+	multimodalScorerWeight := 4.0
 
 	return &configapi.EndpointPickerConfig{
 		TypeMeta: metav1.TypeMeta{
