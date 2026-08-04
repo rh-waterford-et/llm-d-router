@@ -16,9 +16,9 @@ import (
 func createEndpoint(name, ip string, labels map[string]string) scheduling.Endpoint {
 	return scheduling.NewEndpoint(
 		&fwkdl.EndpointMetadata{
-			NamespacedName: k8stypes.NamespacedName{Name: name},
-			Address:        ip,
-			Labels:         labels,
+			ID:      k8stypes.NamespacedName{Name: name},
+			Address: ip,
+			Labels:  labels,
 		},
 		&fwkdl.Metrics{},
 		nil,
@@ -45,7 +45,7 @@ func mixedEndpoints() []scheduling.Endpoint {
 func endpointNames(eps []scheduling.Endpoint) []string {
 	names := make([]string, len(eps))
 	for i, ep := range eps {
-		names[i] = ep.GetMetadata().NamespacedName.Name
+		names[i] = ep.GetMetadata().ID.Name
 	}
 	return names
 }

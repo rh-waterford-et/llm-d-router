@@ -73,6 +73,7 @@ spec:
         - "9003"
         - --config-file
         - "/etc/epp/epp-config.yaml"
+        - --allow-experimental-plugins=true
         - --metrics-endpoint-auth=${METRICS_ENDPOINT_AUTH}
         ports:
         - containerPort: 9002
