@@ -27,8 +27,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/llm-d/llm-d-router/pkg/coordinator/gateway"
-
 	reqcommon "github.com/llm-d/llm-d-router/pkg/common/request"
 
 	"github.com/llm-d/llm-d-router/pkg/coordinator/config"

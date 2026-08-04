@@ -1155,6 +1155,7 @@ func TestOpenAIParser_ParseResponse(t *testing.T) {
 	tests := []struct {
 		name    string
 		body    []byte
+		headers map[string]string
 		want    *fwkrh.ParsedResponse
 		wantErr bool
 	}{
@@ -1272,11 +1273,33 @@ func TestOpenAIParser_ParseResponse(t *testing.T) {
 			body:    []byte(`{malformed`),
 			wantErr: true,
 		},
+		{
+			name:    "audio/mpeg response returns nil without error",
+			body:    []byte("\xff\xfb\x90\x00binary-audio-data"),
+			headers: map[string]string{"content-type": "audio/mpeg"},
+			want:    nil,
+		},
+		{
+			name:    "audio/wav response returns nil without error",
+			body:    []byte("RIFF....WAVEbinary"),
+			headers: map[string]string{"content-type": "audio/wav"},
+			want:    nil,
+		},
+		{
+			name:    "image/png response returns nil without error",
+			body:    []byte("\x89PNG\r\n\x1a\nbinary"),
+			headers: map[string]string{"content-type": "image/png"},
+			want:    nil,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := parser.ParseResponse(context.Background(), tt.body, map[string]string{}, false)
+			headers := tt.headers
+			if headers == nil {
+				headers = map[string]string{}
+			}
+			got, err := parser.ParseResponse(context.Background(), tt.body, headers, false)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("ParseResponse() error = %v, wantErr %v", err, tt.wantErr)
 			}

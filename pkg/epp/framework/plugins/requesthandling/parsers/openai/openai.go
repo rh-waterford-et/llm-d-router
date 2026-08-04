@@ -179,10 +179,18 @@ func (p *OpenAIParser) ParseResponse(ctx context.Context, body []byte, headers m
 
 	isStream := false
 	for k, v := range headers {
-		if strings.ToLower(k) == contentType && strings.Contains(strings.ToLower(v), eventStreamType) {
-			isStream = true
-			break
+		ct := strings.ToLower(v)
+		if strings.ToLower(k) != contentType {
+			continue
 		}
+		// Binary modality responses (audio, images) carry no JSON usage block.
+		if strings.HasPrefix(ct, "audio/") || strings.HasPrefix(ct, "image/") {
+			return nil, nil //nolint:nilnil
+		}
+		if strings.Contains(ct, eventStreamType) {
+			isStream = true
+		}
+		break
 	}
 	if isStream {
 		return p.parseStreamResponse(body)

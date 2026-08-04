@@ -36,6 +36,8 @@ MODEL_NAME_SAFE=$(echo "${MODEL_ID}" | tr '[:upper:]' '[:lower:]' | tr ' /_.' '-
 
 export EPP_NAME="${EPP_NAME:-${MODEL_NAME_SAFE}-endpoint-picker}"
 export POOL_NAME="${POOL_NAME:-${MODEL_NAME_SAFE}-inference-pool}"
+export MULTIMODAL_EPP_NAME="${MULTIMODAL_EPP_NAME:-multimodal-endpoint-picker}"
+export MULTIMODAL_POOL_NAME="${MULTIMODAL_POOL_NAME:-multimodal-inference-pool}"
 export NAMESPACE="${NAMESPACE:-default}"
 export METRICS_ENDPOINT_AUTH="${METRICS_ENDPOINT_AUTH:-false}"
 
@@ -254,7 +256,8 @@ kubectl kustomize --enable-helm "${KUSTOMIZE_DIR}" \
   | envsubst '${POOL_NAME} ${MODEL_NAME} ${MODEL_NAME_SAFE} ${EPP_NAME} ${EPP_IMAGE} ${VLLM_IMAGE} \
   ${COORDINATOR_IMAGE} ${SIDECAR_IMAGE} ${VLLM_RENDER_URL} ${NAMESPACE} ${METRICS_ENDPOINT_AUTH} \
   ${DECODE_ROLE} ${MODEL_ARCH} ${KV_CACHE_ENABLED} ${VLLM_SIM_MODE} \
-  ${VLLM_REPLICA_COUNT_D} ${VLLM_DATA_PARALLEL_SIZE} ${VLLM_EXTRA_ARGS_D}' \
+  ${VLLM_REPLICA_COUNT_D} ${VLLM_DATA_PARALLEL_SIZE} ${VLLM_EXTRA_ARGS_D} \
+  ${MULTIMODAL_EPP_NAME} ${MULTIMODAL_POOL_NAME}' \
   | awk '
     /^[[:space:]]*-[[:space:]]+".*"[[:space:]]*$/ {
       match($0, /^[[:space:]]*/); indent = substr($0, 1, RLENGTH)
