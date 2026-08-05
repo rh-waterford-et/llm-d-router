@@ -21,10 +21,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	stdlog "log"
 	"net/http"
+	"net/http/httputil"
 	"regexp"
+	"strings"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/google/uuid"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -136,4 +140,57 @@ func classifyPipelineError(err error, requestID string) (int, string) {
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
+}
+
+// handlePassthrough forwards TTS, STT, image generation, and embeddings
+// requests to the Inference Gateway without pipeline processing. The gateway's
+// EPP routes by pod labels (llm-d.ai/model-arch) so no EPP-Phase header is
+// added. Content-Type is preserved as-is (audio/transcriptions sends
+// multipart). Binary audio responses are proxied verbatim.
+func (s *Server) handlePassthrough(w http.ResponseWriter, r *http.Request) {
+	if s.gwClient == nil || s.gwTarget == nil {
+		serverLog.Error(nil, "passthrough: gateway not configured")
+		http.Error(w, "gateway not configured", http.StatusBadGateway)
+		return
+	}
+
+	requestID := r.Header.Get(reqcommon.RequestIDHeaderKey)
+	if !validRequestID.MatchString(requestID) {
+		if requestID != "" {
+			serverLog.V(logutil.DEFAULT).Info("replaced invalid client request ID", "rejectedLength", len(requestID))
+		}
+		requestID = uuid.New().String()
+		r.Header.Set(reqcommon.RequestIDHeaderKey, requestID)
+	}
+
+	logger := serverLog.WithValues(reqcommon.RequestIDHeaderKey, requestID)
+	target := s.gwTarget
+	proxy := &httputil.ReverseProxy{
+		Director: func(req *http.Request) {
+			req.URL.Scheme = target.Scheme
+			req.URL.Host = target.Host
+			req.Host = target.Host
+		},
+		Transport:     s.gwClient.Transport(),
+		FlushInterval: -1,
+		ErrorLog:      stdlog.New(&passthroughErrLogWriter{logger: logger}, "", 0),
+		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+			logger.Error(err, "passthrough proxy error")
+			w.WriteHeader(http.StatusBadGateway)
+		},
+	}
+	proxy.ServeHTTP(w, r)
+}
+
+// passthroughErrLogWriter adapts the reverse proxy's *log.Logger sink to the
+// request-scoped logr. The proxy logs here when a read fails mid-copy, after
+// the response has started — the only signal that the client received a
+// truncated partial response.
+type passthroughErrLogWriter struct {
+	logger logr.Logger
+}
+
+func (w *passthroughErrLogWriter) Write(p []byte) (int, error) {
+	w.logger.Error(errors.New(strings.TrimSpace(string(p))), "passthrough proxy streaming error: client received a partial response")
+	return len(p), nil
 }

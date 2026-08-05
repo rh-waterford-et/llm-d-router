@@ -30,6 +30,7 @@ func createModelServersFromKustomize(kustomizeDir string, extra map[string]strin
 		"${VLLM_SIM_MODE}":           "echo",
 		"${KV_CACHE_ENABLED}":        "false",
 		"${DECODE_ROLE}":             "",
+		"${MODEL_ARCH}":              "",
 		"${EPP_NAME}":                "e2e-epp",
 		"${NAMESPACE}":               nsName,
 		"${HF_TOKEN}":                os.Getenv("HF_TOKEN"),

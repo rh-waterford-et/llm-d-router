@@ -32,6 +32,7 @@ import (
 	reqcommon "github.com/llm-d/llm-d-router/pkg/common/request"
 
 	"github.com/llm-d/llm-d-router/pkg/coordinator/config"
+	"github.com/llm-d/llm-d-router/pkg/coordinator/gateway"
 	"github.com/llm-d/llm-d-router/pkg/coordinator/pipeline"
 )
 
@@ -46,9 +47,20 @@ func (s stubStep) Execute(context.Context, *pipeline.RequestContext) error { ret
 
 func newTestServer(stepErr error) *Server {
 	p := pipeline.New([]pipeline.Step{stubStep{name: "stub", err: stepErr}})
-	srv, err := New(config.ServerConfig{}, p)
+	srv, err := New(config.ServerConfig{}, p, nil)
 	if err != nil {
 		panic(err) // default config is always valid
+	}
+	return srv
+}
+
+func newTestServerWithGateway(t *testing.T, backend *httptest.Server) *Server {
+	t.Helper()
+	gc := gateway.NewWithTransport(nil, backend.URL)
+	p := pipeline.New([]pipeline.Step{stubStep{name: "stub"}})
+	srv, err := New(config.ServerConfig{}, p, gc)
+	if err != nil {
+		t.Fatalf("New: %v", err)
 	}
 	return srv
 }
@@ -134,7 +146,7 @@ func TestHandleInference_BodyOverConfiguredCapMapsTo413(t *testing.T) {
 	// A body larger than server.max_request_body_size (in MB) is rejected before parsing.
 	// Use a 1 MB cap and send 1 MB + 1 byte to trigger the limit.
 	p := pipeline.New([]pipeline.Step{stubStep{name: "stub"}})
-	srv, err := New(config.ServerConfig{MaxRequestBodySize: 1}, p)
+	srv, err := New(config.ServerConfig{MaxRequestBodySize: 1}, p, nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -149,7 +161,7 @@ func TestHandleInference_BodyOverConfiguredCapMapsTo413(t *testing.T) {
 
 func TestNew_RejectsNegativeMaxRequestBodySize(t *testing.T) {
 	p := pipeline.New([]pipeline.Step{stubStep{name: "stub"}})
-	if _, err := New(config.ServerConfig{MaxRequestBodySize: -1}, p); err == nil {
+	if _, err := New(config.ServerConfig{MaxRequestBodySize: -1}, p, nil); err == nil {
 		t.Fatal("expected error for negative MaxRequestBodySize")
 	}
 }
@@ -158,7 +170,7 @@ func TestNew_RejectsOverflowMaxRequestBodySize(t *testing.T) {
 	// MaxInt64 would cause maxRequestBodySize+1 to overflow to a negative
 	// io.LimitReader limit, making it return immediate EOF.
 	p := pipeline.New([]pipeline.Step{stubStep{name: "stub"}})
-	if _, err := New(config.ServerConfig{MaxRequestBodySize: math.MaxInt64}, p); err == nil {
+	if _, err := New(config.ServerConfig{MaxRequestBodySize: math.MaxInt64}, p, nil); err == nil {
 		t.Fatal("expected error for MaxRequestBodySize > MaxInt64-1")
 	}
 }
@@ -260,5 +272,146 @@ func TestRoutesRegistered(t *testing.T) {
 				t.Fatalf("route %s %s not registered: got HTTP %d", tt.method, tt.path, rec.Code)
 			}
 		})
+	}
+}
+
+func TestHandlePassthrough_ForwardsToGateway(t *testing.T) {
+	// A well-formed request is proxied to the gateway and the 200 response is
+	// returned to the caller unchanged.
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"audio":"ok"}`))
+	}))
+	defer backend.Close()
+
+	srv := newTestServerWithGateway(t, backend)
+	req := httptest.NewRequest(http.MethodPost, gateway.PathAudioSpeech, strings.NewReader(`{"model":"tts-1","input":"hello"}`))
+	rec := httptest.NewRecorder()
+	srv.handlePassthrough(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "audio") {
+		t.Fatalf("expected upstream body, got %q", rec.Body.String())
+	}
+}
+
+func TestHandlePassthrough_BinaryResponseProxied(t *testing.T) {
+	// Binary audio responses (audio/mpeg) are forwarded verbatim without
+	// Content-Type coercion to application/json.
+	binaryBody := []byte{0xFF, 0xFB, 0x90, 0x00, 0x00}
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "audio/mpeg")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(binaryBody)
+	}))
+	defer backend.Close()
+
+	srv := newTestServerWithGateway(t, backend)
+	req := httptest.NewRequest(http.MethodPost, gateway.PathAudioSpeech, strings.NewReader(`{"model":"tts-1","input":"hello"}`))
+	rec := httptest.NewRecorder()
+	srv.handlePassthrough(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if rec.Header().Get("Content-Type") != "audio/mpeg" {
+		t.Fatalf("expected audio/mpeg Content-Type, got %q", rec.Header().Get("Content-Type"))
+	}
+	if string(rec.Body.Bytes()) != string(binaryBody) {
+		t.Fatalf("binary body was not proxied verbatim")
+	}
+}
+
+func TestHandlePassthrough_Upstream4xxForwarded(t *testing.T) {
+	// An upstream 4xx (e.g. 422 Unprocessable Entity) is forwarded as-is to
+	// the caller rather than mapped to a 502.
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "invalid input", http.StatusUnprocessableEntity)
+	}))
+	defer backend.Close()
+
+	srv := newTestServerWithGateway(t, backend)
+	req := httptest.NewRequest(http.MethodPost, gateway.PathAudioSpeech, strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+	srv.handlePassthrough(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422 to be forwarded, got %d", rec.Code)
+	}
+}
+
+func TestHandlePassthrough_GatewayErrorMapsTo502(t *testing.T) {
+	// A transport failure (gateway unreachable) must map to 502.
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
+	backend.Close() // close immediately so the proxy cannot connect
+
+	srv := newTestServerWithGateway(t, backend)
+	req := httptest.NewRequest(http.MethodPost, gateway.PathAudioSpeech, strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+	srv.handlePassthrough(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502 for gateway error, got %d", rec.Code)
+	}
+}
+
+func TestHandlePassthrough_NilGatewayMapsTo502(t *testing.T) {
+	// When no gateway client is configured, handlePassthrough must return 502
+	// rather than panicking.
+	srv := newTestServer(nil) // gwClient is nil
+	req := httptest.NewRequest(http.MethodPost, gateway.PathAudioSpeech, strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+	srv.handlePassthrough(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502 for nil gateway, got %d", rec.Code)
+	}
+}
+
+func TestHandlePassthrough_MaliciousRequestIDIsReplaced(t *testing.T) {
+	// An x-request-id with disallowed characters is replaced with a generated
+	// UUID before the request is forwarded to the gateway.
+	var receivedID string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedID = r.Header.Get(reqcommon.RequestIDHeaderKey)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	malicious := "evil\r\nInjected: header"
+	srv := newTestServerWithGateway(t, backend)
+	req := httptest.NewRequest(http.MethodPost, gateway.PathAudioSpeech, strings.NewReader(`{}`))
+	req.Header.Set(reqcommon.RequestIDHeaderKey, malicious)
+	rec := httptest.NewRecorder()
+	srv.handlePassthrough(rec, req)
+
+	if receivedID == malicious {
+		t.Fatalf("malicious request ID must not reach the gateway: %q", receivedID)
+	}
+	if receivedID == "" {
+		t.Fatal("a replacement request ID must be forwarded to the gateway")
+	}
+}
+
+func TestHandlePassthrough_ContentTypeNotForced(t *testing.T) {
+	// Multipart requests (e.g. audio/transcriptions) must not have their
+	// Content-Type overwritten to application/json by the proxy.
+	var receivedCT string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedCT = r.Header.Get("Content-Type")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	srv := newTestServerWithGateway(t, backend)
+	req := httptest.NewRequest(http.MethodPost, gateway.PathAudioTranscriptions, strings.NewReader("--boundary\r\n"))
+	req.Header.Set("Content-Type", "multipart/form-data; boundary=boundary")
+	rec := httptest.NewRecorder()
+	srv.handlePassthrough(rec, req)
+
+	if receivedCT != "multipart/form-data; boundary=boundary" {
+		t.Fatalf("expected multipart Content-Type to be preserved, got %q", receivedCT)
 	}
 }

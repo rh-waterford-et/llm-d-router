@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-stt-sim
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tinyllama-1-1b-chat-v1-0-inference-pool
+      llm-d.ai/model-arch: encoder-decoder-stt
+  template:
+    metadata:
+      labels:
+        app: tinyllama-1-1b-chat-v1-0-inference-pool
+        llm-d.ai/engine-type: vllm
+        llm-d.ai/model-arch: encoder-decoder-stt
+    spec:
+      containers:
+      - name: vllm-sim
+        image: ghcr.io/llm-d/llm-d-inference-sim:v0.9.2
+        imagePullPolicy: Always
+        args:
+        - --model
+        - openai/whisper-large-v3
+        - --port
+        - "8000"
+        - --mode
+        - echo
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        ports:
+        - containerPort: 8000
+          name: http
+          protocol: TCP
+        resources:
+          requests:
+            cpu: 10m

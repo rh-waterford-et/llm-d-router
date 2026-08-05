@@ -34,6 +34,7 @@ import (
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/picker/maxscore"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/profilehandler/single"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/kvcacheutilization"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/multimodal"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/prefix"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/queuedepth"
 )
@@ -47,6 +48,8 @@ func loadDefaultConfig() *configapi.EndpointPickerConfig {
 	queueScorerWeight := 2.0
 	kvCacheUtilizationScorerWeight := 2.0
 	prefixCacheScorerWeight := 3.0
+	multimodalScorerWeight := 4.0 // Higher priority weight for multimodal path matching
+
 	return &configapi.EndpointPickerConfig{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: configapi.GroupVersion.String(),
@@ -62,6 +65,9 @@ func loadDefaultConfig() *configapi.EndpointPickerConfig {
 			},
 			{
 				Type: prefix.PrefixCacheScorerPluginType,
+			},
+			{
+				Type: multimodal.ScorerName,
 			},
 			{
 				Type: sourcemetrics.MetricsDataSourceType,
@@ -85,6 +91,10 @@ func loadDefaultConfig() *configapi.EndpointPickerConfig {
 					{
 						PluginRef: prefix.PrefixCacheScorerPluginType,
 						Weight:    &prefixCacheScorerWeight,
+					},
+					{
+						PluginRef: multimodal.ScorerName,
+						Weight:    &multimodalScorerWeight,
 					},
 				},
 			},
