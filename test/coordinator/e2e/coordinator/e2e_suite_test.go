@@ -15,16 +15,17 @@ limitations under the License.
 */
 
 // Package coordinate2e runs end-to-end tests for the coordinator service
-// against the e-p-d-pools topology: a single InferencePool covering the
-// encode, prefill, and decode worker pods, served by one EPP that runs the
-// scheduling profile named by each request's EPP-Profile header, behind a
-// hand-rolled standalone Envoy routing on that same header, and the
-// coordinator deployed as a pod. No Istio, no Gateway/HTTPRoute CRDs.
+// against the e-p-d-pools topology: one InferencePool per phase (encode,
+// prefill, decode), each with its own EPP, a hand-rolled standalone Envoy
+// routing on EPP-Phase header, and the coordinator deployed as a pod.
+// No Istio, no Gateway/HTTPRoute CRDs.
 package coordinate2e
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -91,8 +92,7 @@ const (
 	// role-scoped ext_proc clusters, and the three role-scoped InferencePools.
 	envoy3EPPManifest = "../../../../deploy/environments/dev/coordinator-e2e-infra/envoy-3-epp.yaml"
 	pool3EPPManifest  = "../../../../deploy/environments/dev/coordinator-e2e-infra/inference-pools-3-epp.yaml"
-
-	crdGIEPath = "../../../../deploy/components/crds-gie"
+	crdGIEPath        = "../../../../deploy/components/crds-gie"
 )
 
 var (
@@ -273,6 +273,9 @@ func setupK8sCluster() {
 	gomega.Expect(err).ShouldNot(gomega.HaveOccurred())
 	gomega.Eventually(session).WithTimeout(600 * time.Second).Should(gexec.Exit(0))
 
+	cleanNodeResolvConf()
+	fixCoreDNS()
+
 	images := []string{vllmSimImage, eppImage, coordinatorImage}
 	if vllmRenderImage != vllmSimImage {
 		images = append(images, vllmRenderImage)
@@ -280,6 +283,184 @@ func setupK8sCluster() {
 	for _, img := range images {
 		kindLoadImage(img)
 	}
+}
+
+// cleanNodeResolvConf replaces the Kind node's /etc/resolv.conf with clean
+// public DNS entries, removing any host search domains. The Kind node
+// inherits the host's resolv.conf, and kubelet appends its search domains
+// to every pod's resolv.conf. With ndots:5, Go's resolver tries appending
+// search domains before the bare FQDN for names with fewer than 5 dots.
+// ISP or local wildcard domains can resolve those suffixed names to
+// 127.0.0.1, which the SSRF guard in replace-media-urls blocks.
+func cleanNodeResolvConf() {
+	nodeName := kindClusterName + "-control-plane"
+	out, err := exec.Command(containerRuntime, "exec", nodeName,
+		"cat", "/etc/resolv.conf").Output()
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "search") {
+			ginkgo.By("Cleaning Kind node resolv.conf to remove host search domains")
+			cmd := exec.Command(containerRuntime, "exec", nodeName,
+				"/bin/bash", "-c", `printf 'nameserver 8.8.8.8\nnameserver 8.8.4.4\n' > /etc/resolv.conf`)
+			session, err := gexec.Start(cmd, ginkgo.GinkgoWriter, ginkgo.GinkgoWriter)
+			gomega.Expect(err).ShouldNot(gomega.HaveOccurred())
+			gomega.Eventually(session).WithTimeout(30 * time.Second).Should(gexec.Exit(0))
+			return
+		}
+	}
+}
+
+// fixCoreDNS patches the CoreDNS Corefile to forward external queries to
+// the host's upstream DNS servers instead of /etc/resolv.conf. Inside a Kind
+// node container, /etc/resolv.conf typically points to a localhost stub
+// resolver (systemd-resolved at 127.0.0.53, Docker DNS at 127.0.0.11, or
+// dnsmasq at 127.0.0.1). CoreDNS would forward to that loopback address
+// inside its own pod network namespace, creating a forwarding loop that
+// crashes CoreDNS or silently breaks DNS resolution for all pods.
+func fixCoreDNS() {
+	upstream := upstreamDNS()
+	ginkgo.By("Patching CoreDNS to forward to: " + upstream)
+
+	corefile := fmt.Sprintf(`.:53 {
+    errors
+    health {
+       lameduck 5s
+    }
+    ready
+    kubernetes cluster.local in-addr.arpa ip6.arpa {
+       pods insecure
+       fallthrough in-addr.arpa ip6.arpa
+       ttl 30
+    }
+    prometheus :9153
+    forward . %s
+    cache 30
+    loop
+    reload
+    loadbalance
+}
+`, upstream)
+
+	patch, err := json.Marshal(map[string]map[string]string{
+		"data": {"Corefile": corefile},
+	})
+	gomega.Expect(err).ShouldNot(gomega.HaveOccurred())
+
+	cmd := exec.Command("kubectl", "patch", "configmap", "coredns",
+		"-n", "kube-system", "--type", "merge", "-p", string(patch))
+	session, err := gexec.Start(cmd, ginkgo.GinkgoWriter, ginkgo.GinkgoWriter)
+	gomega.Expect(err).ShouldNot(gomega.HaveOccurred())
+	gomega.Eventually(session).WithTimeout(30 * time.Second).Should(gexec.Exit(0))
+
+	// Delete existing CoreDNS pods so the deployment controller recreates
+	// them with the updated configmap immediately. A rollout restart is
+	// slower and can briefly serve the old Corefile during the rolling update.
+	ginkgo.By("Deleting CoreDNS pods to apply new Corefile")
+	cmd = exec.Command("kubectl", "delete", "pods", "-n", "kube-system", "-l", "k8s-app=kube-dns")
+	session, err = gexec.Start(cmd, ginkgo.GinkgoWriter, ginkgo.GinkgoWriter)
+	gomega.Expect(err).ShouldNot(gomega.HaveOccurred())
+	gomega.Eventually(session).WithTimeout(30 * time.Second).Should(gexec.Exit(0))
+
+	ginkgo.By("Waiting for CoreDNS to become ready")
+	cmd = exec.Command("kubectl", "rollout", "status", "deployment/coredns",
+		"-n", "kube-system", "--timeout=120s")
+	session, err = gexec.Start(cmd, ginkgo.GinkgoWriter, ginkgo.GinkgoWriter)
+	gomega.Expect(err).ShouldNot(gomega.HaveOccurred())
+	gomega.Eventually(session).WithTimeout(150 * time.Second).Should(gexec.Exit(0))
+
+	// Verify the configmap was updated and CoreDNS pods are not crash-looping.
+	ginkgo.By("Verifying CoreDNS Corefile contains patched upstream")
+	gomega.Eventually(func() string {
+		cmd := exec.Command("kubectl", "get", "configmap", "coredns",
+			"-n", "kube-system", "-o", "jsonpath={.data.Corefile}")
+		out, err := cmd.Output()
+		if err != nil {
+			return fmt.Sprintf("kubectl error: %v", err)
+		}
+		return string(out)
+	}, 30*time.Second, 2*time.Second).Should(
+		gomega.And(
+			gomega.ContainSubstring("8.8.8.8"),
+			gomega.Not(gomega.ContainSubstring("/etc/resolv.conf")),
+		),
+		"CoreDNS Corefile must forward to real upstream DNS, not /etc/resolv.conf",
+	)
+
+	ginkgo.By("Verifying CoreDNS pods are running")
+	gomega.Eventually(func() bool {
+		cmd := exec.Command("kubectl", "get", "pods", "-n", "kube-system",
+			"-l", "k8s-app=kube-dns", "-o", "jsonpath={.items[*].status.phase}")
+		out, err := cmd.Output()
+		if err != nil {
+			return false
+		}
+		phases := strings.Fields(string(out))
+		if len(phases) == 0 {
+			return false
+		}
+		for _, p := range phases {
+			if p != "Running" {
+				return false
+			}
+		}
+		return true
+	}, 60*time.Second, 5*time.Second).Should(gomega.BeTrue(), "all CoreDNS pods should be Running")
+
+	// Dump CoreDNS logs so loop-detection crashes or upstream connectivity
+	// failures are visible in the test output.
+	ginkgo.By("CoreDNS pod logs after fix")
+	cmd = exec.Command("kubectl", "logs", "-n", "kube-system", "-l", "k8s-app=kube-dns", "--tail=30")
+	session, err = gexec.Start(cmd, ginkgo.GinkgoWriter, ginkgo.GinkgoWriter)
+	gomega.Expect(err).ShouldNot(gomega.HaveOccurred())
+	gomega.Eventually(session).WithTimeout(30 * time.Second).Should(gexec.Exit(0))
+}
+
+// upstreamDNS discovers the host's real upstream DNS servers by reading
+// systemd-resolved's configuration (Fedora, Ubuntu) or /etc/resolv.conf.
+// Localhost stubs (127.x.x.x, ::1) are filtered out because they would
+// create a forwarding loop inside CoreDNS's pod. Google public DNS is
+// appended as a fallback. If no upstream is discovered, returns Google DNS.
+func upstreamDNS() string {
+	for _, path := range []string{
+		"/run/systemd/resolve/resolv.conf",
+		"/etc/resolv.conf",
+	} {
+		servers := parseNameserversFromFile(path)
+		if len(servers) > 0 {
+			result := strings.Join(servers, " ")
+			if !strings.Contains(result, "8.8.8.8") {
+				result += " 8.8.8.8"
+			}
+			return result
+		}
+	}
+	return "8.8.8.8 8.8.4.4"
+}
+
+func parseNameserversFromFile(path string) []string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var servers []string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "nameserver") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		addr := fields[1]
+		if strings.HasPrefix(addr, "127.") || addr == "::1" {
+			continue
+		}
+		servers = append(servers, addr)
+	}
+	return servers
 }
 
 func kindLoadImage(image string) {

@@ -27,6 +27,7 @@ import (
 
 	envoy "github.com/llm-d/llm-d-router/pkg/common/envoy"
 	logutil "github.com/llm-d/llm-d-router/pkg/common/observability/logging"
+	fwkrequest "github.com/llm-d/llm-d-router/pkg/epp/framework/common/request"
 	fwkrh "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/requesthandling"
 	"github.com/llm-d/llm-d-router/pkg/epp/metrics"
 	"github.com/llm-d/llm-d-router/pkg/epp/util/request"
@@ -69,7 +70,7 @@ func (s *StreamingServer) HandleResponseBody(ctx context.Context, reqCtx *Reques
 	parser, err := s.getOrResolveParser(ctx, reqCtx)
 	if err != nil {
 		logger.Error(err, "parsing response: failed to resolve parser")
-	} else {
+	} else if !isBinaryResponseEndpoint(reqCtx) {
 		before := time.Now()
 		parsedResp, err = parser.ParseResponse(ctx, responseBytes, reqCtx.Response.Headers, endOfStream)
 		metrics.RecordPluginProcessingLatency(fwkrh.ResponseParsingExtensionPoint, parser.TypedName().Type, parser.TypedName().Name, time.Since(before))
@@ -93,6 +94,18 @@ func (s *StreamingServer) HandleResponseBody(ctx context.Context, reqCtx *Reques
 		metrics.RecordRequestTPOT(ctx, reqCtx.IncomingModelName, reqCtx.TargetModelName, fairnessID, priority, reqCtx.modelServerStreaming, reqCtx.RequestReceivedTimestamp, reqCtx.FirstTokenTimestamp, reqCtx.ResponseCompleteTimestamp, reqCtx.Usage.CompletionTokens)
 	}
 	return s.director.HandleResponseBody(ctx, reqCtx, endOfStream)
+}
+
+// isBinaryResponseEndpoint returns true for endpoints whose response body is
+// always binary (non-JSON) data, regardless of the Content-Type the backend
+// sends. This avoids spurious JSON parse errors when backends omit or set an
+// incorrect Content-Type for binary responses.
+func isBinaryResponseEndpoint(reqCtx *RequestContext) bool {
+	if reqCtx.Request == nil {
+		return false
+	}
+	path := fwkrequest.GetRequestPath(reqCtx.Request.Headers)
+	return fwkrequest.MatchPathSuffix(path, "audio/speech")
 }
 
 func (s *StreamingServer) HandleResponseHeaders(ctx context.Context, reqCtx *RequestContext, resp *extProcPb.ProcessingRequest_ResponseHeaders) *RequestContext {

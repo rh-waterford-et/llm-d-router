@@ -125,6 +125,12 @@ export VLLM_SIM_MODE="${VLLM_SIM_MODE:-echo}"
 # uses this to optionally mark the unified pod's role.
 export DECODE_ROLE="${DECODE_ROLE:-}"
 
+# Model architecture label for the vllm-d pod (llm-d.ai/model-arch).
+# Used by the modality-filter to route multimodal requests to compatible pods.
+# Empty by default; set to a value from pkg/common/multimodal.go
+# (e.g., autoregressive-tts, encoder-decoder-stt, diffusion).
+export MODEL_ARCH="${MODEL_ARCH:-}"
+
 # Kubernetes namespace for all deployed resources
 export NAMESPACE="${NAMESPACE:-default}"
 
@@ -427,7 +433,7 @@ kubectl kustomize --enable-helm ${KUSTOMIZE_DIR} \
   ${SIDECAR_IMAGE} ${VLLM_RENDER_IMAGE} ${VLLM_RENDER_PORT} ${VLLM_RENDER_URL} ${TARGET_PORTS} ${NAMESPACE} \
   ${VLLM_REPLICA_COUNT_E} ${VLLM_REPLICA_COUNT_P} ${VLLM_REPLICA_COUNT_D} ${VLLM_DATA_PARALLEL_SIZE} \
   ${KV_CONNECTOR_TYPE} ${EC_CONNECTOR_TYPE} ${CONNECTOR_TYPE} ${KV_CACHE_ENABLED} ${HF_TOKEN} ${VLLM_SIM_MODE} \
-  ${DECODE_ROLE} ${VLLM_EXTRA_ARGS_E} ${VLLM_EXTRA_ARGS_P} ${VLLM_EXTRA_ARGS_D}' \
+  ${DECODE_ROLE} ${MODEL_ARCH} ${VLLM_EXTRA_ARGS_E} ${VLLM_EXTRA_ARGS_P} ${VLLM_EXTRA_ARGS_D}' \
   | awk '
     /^[[:space:]]*-[[:space:]]+".*"[[:space:]]*$/ {
       match($0, /^[[:space:]]*/); indent = substr($0, 1, RLENGTH)

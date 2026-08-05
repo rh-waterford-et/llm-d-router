@@ -29,6 +29,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/llm-d/llm-d-router/pkg/coordinator/gateway"
 	testutils "github.com/llm-d/llm-d-router/test/utils"
@@ -167,6 +169,14 @@ func runCoordinatorPipeline(path string, body []byte, expectedSteps []string, ex
 		cfg = coordinatorConfig[0]
 	}
 	coordinator = createCoordinator(cfg)
+
+	ginkgo.By("Verifying coordinator deployment was created successfully")
+	testutils.DeploymentAvailable(testConfig, &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "llm-d-coordinator",
+			Namespace: nsName,
+		},
+	})
 
 	req, err := http.NewRequest(http.MethodPost,
 		gatewayBaseURL()+path,

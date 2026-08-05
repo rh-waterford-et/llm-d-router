@@ -1,0 +1,27 @@
+# Coordinator kind/Istio development environment (EPD, no disaggregation).
+#
+# Deploys the coordinator, decode EPP, and a vLLM simulator on an Istio-backed
+# kind cluster. External clients reach the coordinator through the Istio gateway
+# NodePort (30080); the coordinator routes decode requests back through the same
+# gateway to the decode InferencePool via the EPP.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+- ../../../../components/istio-control-plane/
+- gateways.yaml
+- ../../../components/inference-gateway/base/
+- ../../../components/inference-gateway/epd-pool/
+- ../../../components/inference-gateway/multimodal-pool/
+- ../../../components/coordinator/
+- ../../../components/vllm-decode/
+- ../../../components/vllm-multimodal/
+- services.yaml
+- httproutes.yaml
+- destination-rules.yaml
+
+components:
+- ../../../components/overlays/simulator-kind/
+
+patches:
+- path: patch-gateways.yaml

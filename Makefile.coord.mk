@@ -86,7 +86,10 @@ BUILDER_SOCK_FLAGS = --security-opt label=disable \
 else
 CONTAINER_SOCK ?= /var/run/docker.sock
 ifeq ($(TARGETOS),darwin)
-DOCKER_SOCK_GID := $(shell stat -f '%g' $(CONTAINER_SOCK) 2>/dev/null)
+# On macOS Docker Desktop the host path is a symlink; stat returns the symlink's GID,
+# not the socket's GID inside the container. Docker Desktop presents the mounted socket
+# as root:root (GID 0) with mode 660 inside every container, so use 0 directly.
+DOCKER_SOCK_GID := 0
 else
 DOCKER_SOCK_GID := $(shell stat -c '%g' $(CONTAINER_SOCK) 2>/dev/null)
 endif
@@ -265,4 +268,14 @@ image-build-builder: check-container-tool ## Build builder image if missing loca
 image-pull: check-container-tool ## Pull all related images using $(CONTAINER_RUNTIME)
 	@printf "\033[33;1m==== Pulling Container images ====\033[0m\n"
 	PULL_EPP_IMAGE=false PULL_SIDECAR_IMAGE=false ./scripts/pull_images.sh
+
+##@ Kind Cluster
+
+.PHONY: env-dev-kind-coordinator
+env-dev-kind-coordinator: ## Deploy coordinator, decode EPP, and vLLM simulator to a kind cluster
+	./scripts/kind-coordinator-env.sh
+
+.PHONY: clean-env-dev-kind-coordinator
+clean-env-dev-kind-coordinator: ## Delete the coordinator kind cluster
+	kind delete cluster --name $${CLUSTER_NAME:-llm-d-coordinator-dev}
 

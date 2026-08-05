@@ -1,0 +1,15 @@
+apiVersion: inference.networking.k8s.io/v1
+kind: InferencePool
+metadata:
+  name: ${MULTIMODAL_POOL_NAME}
+spec:
+  selector:
+    matchLabels:
+      app: ${MULTIMODAL_POOL_NAME}
+  endpointPickerRef:
+    name: ${MULTIMODAL_EPP_NAME}
+    kind: Service
+    port:
+      number: 9002
+  targetPorts:
+  - number: 8000

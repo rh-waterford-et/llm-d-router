@@ -22,6 +22,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/url"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -82,9 +83,11 @@ type Server struct {
 	httpServer         *http.Server
 	pipeline           *pipeline.Pipeline
 	maxRequestBodySize int64
+	gwClient           *gateway.Client
+	gwTarget           *url.URL
 }
 
-func New(cfg config.ServerConfig, p *pipeline.Pipeline) (*Server, error) {
+func New(cfg config.ServerConfig, p *pipeline.Pipeline, gwClient *gateway.Client) (*Server, error) {
 	maxBodySize := cfg.MaxRequestBodySize
 	if maxBodySize == 0 {
 		// Zero means unset; Viper fills this from the config default in
@@ -101,7 +104,15 @@ func New(cfg config.ServerConfig, p *pipeline.Pipeline) (*Server, error) {
 		// LimitReader to receive a negative limit and return immediate EOF.
 		return nil, fmt.Errorf("server: MaxRequestBodySize must be at most %d MB, got %d", int64((math.MaxInt64-1)/config.BytesPerMB), maxBodySize)
 	}
-	s := &Server{pipeline: p, maxRequestBodySize: maxBodySize}
+	s := &Server{pipeline: p, maxRequestBodySize: maxBodySize, gwClient: gwClient}
+
+	if gwClient != nil {
+		target, err := url.Parse(gwClient.BaseURL())
+		if err != nil {
+			return nil, fmt.Errorf("server: parsing gateway URL: %w", err)
+		}
+		s.gwTarget = target
+	}
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
@@ -112,6 +123,10 @@ func New(cfg config.ServerConfig, p *pipeline.Pipeline) (*Server, error) {
 	r.Post(gateway.PathChatCompletions, s.handleInference)
 	r.Post(gateway.PathCompletions, s.handleInference)
 	r.Post(gateway.DefaultGeneratePath, s.handleInference)
+	r.Post(gateway.PathAudioSpeech, s.handlePassthrough)
+	r.Post(gateway.PathAudioTranscriptions, s.handlePassthrough)
+	r.Post(gateway.PathImagesGenerations, s.handlePassthrough)
+	r.Post(gateway.PathEmbeddings, s.handlePassthrough)
 	r.Get("/healthz", s.handleHealth)
 	r.Get("/readyz", s.handleHealth)
 

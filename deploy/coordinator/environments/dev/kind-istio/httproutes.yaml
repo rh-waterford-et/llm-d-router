@@ -1,0 +1,71 @@
+---
+# Requests with EPP-Phase: decode come from the coordinator's gateway client;
+# route them to the decode InferencePool so the EPP can pick a decode pod.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: ${POOL_NAME}-decode-route
+  labels:
+    istio.io/rev: llm-d-gateway
+spec:
+  parentRefs:
+  - name: inference-gateway
+  rules:
+  - matches:
+    - headers:
+      - type: Exact
+        name: EPP-Profile
+        value: decode
+    backendRefs:
+    - group: inference.networking.k8s.io
+      kind: InferencePool
+      name: ${POOL_NAME}-decode
+      port: 8000
+    timeouts:
+      request: 300s
+---
+# Passthrough requests from the coordinator carry EPP-Profile: multimodal;
+# route them to the multimodal InferencePool so the EPP can pick a TTS/STT pod.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: multimodal-route
+  labels:
+    istio.io/rev: llm-d-gateway
+spec:
+  parentRefs:
+  - name: inference-gateway
+  rules:
+  - matches:
+    - headers:
+      - type: Exact
+        name: EPP-Profile
+        value: multimodal
+    backendRefs:
+    - group: inference.networking.k8s.io
+      kind: InferencePool
+      name: multimodal-inference-pool
+      port: 8000
+    timeouts:
+      request: 300s
+---
+# Default rule: all other requests (from external clients) reach the coordinator.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: ${POOL_NAME}-coordinator-route
+  labels:
+    istio.io/rev: llm-d-gateway
+spec:
+  parentRefs:
+  - name: inference-gateway
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - name: llm-d-coordinator
+      port: 8080
+    timeouts:
+      request: 300s
