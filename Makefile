@@ -333,6 +333,18 @@ bench-tokenizer: image-build-builder ## Run external tokenizer + scorer benchmar
 bench-smoke: image-build-builder ## Smoke-run the flowcontrol benchmarks once (-benchtime=1x) to catch runtime rot
 	@printf "\033[33;1m==== Running Flow Control Benchmark Smoke ====\033[0m\n"
 	$(BUILDER_RUN) 'go test -run=^$$ -bench=. -benchtime=1x -timeout=5m ./pkg/epp/flowcontrol/benchmark/...'
+.PHONY: test-bdd
+test-bdd: image-build-builder ## Run BDD behavioral specs (Ginkgo)
+	@printf "\033[33;1m==== Running BDD Behavioral Tests ====\033[0m\n"
+	$(BUILDER_RUN) "go test -v -race ./pkg/epp/scheduling/... ./pkg/epp/flowcontrol/... ./pkg/epp/framework/plugins/requesthandling/parsers/..."
+
+.PHONY: test-acceptance
+test-acceptance: image-build-builder ## Run Gherkin acceptance tests (godog)
+	@printf "\033[33;1m==== Running Acceptance Tests ====\033[0m\n"
+	$(BUILDER_RUN) "go test -v ./test/acceptance/..."
+
+.PHONY: test-all
+test-all: test-unit test-bdd test-acceptance ## Run all non-cluster test tiers
 
 .PHONY: post-deploy-test
 post-deploy-test: ## Run post deployment tests
