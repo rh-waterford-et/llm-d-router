@@ -202,6 +202,15 @@ are under `llm_d_epp_`; each has a deprecated `llm_d_inference_scheduler_*` twin
 *   **Labels:** `model_name`; `decision_type` (`decode-only` or `prefill-decode`).
 *   **Description:** Counts requests by the Prefill/Decode disaggregation decision.
 
+#### DisaggregatedSet rollout
+
+These metrics are exposed by the Alpha `disaggregatedset-rollout-screener` plugin.
+
+| Name | Type | Labels | Notes |
+|---|---|---|---|
+| `disaggregatedset_strict_header_no_match_total` | Counter | `plugin_type`, `plugin_name`, `selector` | Strict header selections that matched no endpoint and failed closed. |
+| `disaggregatedset_revision_gating_share` | Gauge | `plugin_type`, `plugin_name`, `mode`, `revision` | Current weighted share from `0` to `1`. Incomplete revisions report `0`; a revision's series is removed when it disappears from the observed Pod set. |
+
 ### Flow control
 
 Exposed when the `flowControl` feature gate is enabled.
@@ -339,6 +348,26 @@ Prefix `llm_d_router_epp_`. Registered only when the embedded llm-d-kv-cache met
 | `kv_cache_index_lookup_latency_seconds` | Histogram | Index lookup latency. |
 | `kv_cache_events_dedup_removed_hashes_suppressed_total` | Counter | Deduplicated removal hashes suppressed. |
 | `kv_cache_events_dedup_removed_hashes_forwarded_total` | Counter | Deduplicated removal hashes forwarded. |
+
+### MoRI-IO DNS re-resolution
+
+Prefix `moriio_dns_`. Emitted by the sidecar proxy when MoRI-IO peer host specs
+are DNS names that are re-resolved on the request path (see the
+[MoRI-IO feature guide](../pkg/sidecar/proxy/MORIIO_README.md)). Registered on
+the same controller-runtime registry as the other metrics on this page.
+Unlabeled.
+
+Unlike the EPP `/metrics` endpoint, the sidecar does not serve metrics by
+default. Pass `--metrics-port` (e.g. `--metrics-port=9090`) to the sidecar to
+expose these counters at `/metrics` on that port; `0` (the default) disables it.
+The `MORIIO_METRICS_ADDR` env var (e.g. `:9090`) is a backward-compatible
+fallback, consulted only when `--metrics-port` is unset.
+
+| Name | Type | Notes |
+|---|---|---|
+| `moriio_dns_reresolve_total` | Counter | Successful request-path re-resolutions of a peer DNS name (counted per actual lookup; concurrent lookups coalesced by singleflight count once). |
+| `moriio_dns_ip_changed_total` | Counter | Re-resolutions where the peer resolved to a different IP than the cached value (peer pod likely restarted at a new IP). |
+| `moriio_dns_lookup_failures_total` | Counter | Failed peer DNS lookups on the request path; the resolver then serves the last-known-good IP (or, on cold start, the raw spec). |
 
 ## Related work
 
