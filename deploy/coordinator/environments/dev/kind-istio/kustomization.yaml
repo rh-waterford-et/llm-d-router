@@ -4,6 +4,14 @@
 # kind cluster. External clients reach the coordinator through the Istio gateway
 # NodePort (30080); the coordinator routes decode requests back through the same
 # gateway to the decode InferencePool via the EPP.
+#
+# httproutes.yaml and destination-rules.yaml use ${GATEWAY_NAME}, ${POOL_NAME},
+# ${MULTIMODAL_POOL_NAME}, ${EPP_NAME}, ${MULTIMODAL_EPP_NAME} placeholders so the
+# same HTTPRoutes can be re-applied (via scripts/apply-gateway-config.sh) against
+# a differently-named Gateway on other platforms (e.g. agentgateway/OpenShift).
+# gateways.yaml/patch-gateways.yaml below are Istio+kind-specific and are not
+# used on OpenShift, which installs its Gateway from the llm-d agentgateway
+# recipe instead.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
@@ -19,6 +27,8 @@ resources:
 - services.yaml
 - httproutes.yaml
 - destination-rules.yaml
+# envoyfilter-max-headers.yaml disabled: MERGE on HCM broke the Istio gateway in KinD.
+# Header stripping in the coordinator (x-envoy-*) is the supported fix for 431s.
 
 components:
 - ../../../components/overlays/simulator-kind/

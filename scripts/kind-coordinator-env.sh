@@ -38,6 +38,12 @@ export EPP_NAME="${EPP_NAME:-${MODEL_NAME_SAFE}-endpoint-picker}"
 export POOL_NAME="${POOL_NAME:-${MODEL_NAME_SAFE}-inference-pool}"
 export MULTIMODAL_EPP_NAME="${MULTIMODAL_EPP_NAME:-multimodal-endpoint-picker}"
 export MULTIMODAL_POOL_NAME="${MULTIMODAL_POOL_NAME:-multimodal-inference-pool}"
+# Name of the Gateway API Gateway object the HTTPRoutes attach to
+# (deploy/coordinator/environments/dev/kind-istio/gateways.yaml). Kept as a
+# variable, not a hardcoded literal, so the same httproutes.yaml can be
+# re-applied against a differently-named Gateway (e.g. llm-d-inference-gateway
+# on OpenShift/agentgateway) via scripts/apply-gateway-config.sh.
+export GATEWAY_NAME="${GATEWAY_NAME:-inference-gateway}"
 export NAMESPACE="${NAMESPACE:-default}"
 export METRICS_ENDPOINT_AUTH="${METRICS_ENDPOINT_AUTH:-false}"
 
@@ -257,7 +263,7 @@ kubectl kustomize --enable-helm "${KUSTOMIZE_DIR}" \
   ${COORDINATOR_IMAGE} ${SIDECAR_IMAGE} ${VLLM_RENDER_URL} ${NAMESPACE} ${METRICS_ENDPOINT_AUTH} \
   ${DECODE_ROLE} ${MODEL_ARCH} ${KV_CACHE_ENABLED} ${VLLM_SIM_MODE} \
   ${VLLM_REPLICA_COUNT_D} ${VLLM_DATA_PARALLEL_SIZE} ${VLLM_EXTRA_ARGS_D} \
-  ${MULTIMODAL_EPP_NAME} ${MULTIMODAL_POOL_NAME}' \
+  ${MULTIMODAL_EPP_NAME} ${MULTIMODAL_POOL_NAME} ${GATEWAY_NAME}' \
   | awk '
     /^[[:space:]]*-[[:space:]]+".*"[[:space:]]*$/ {
       match($0, /^[[:space:]]*/); indent = substr($0, 1, RLENGTH)

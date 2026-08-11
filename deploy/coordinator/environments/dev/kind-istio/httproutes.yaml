@@ -9,7 +9,7 @@ metadata:
     istio.io/rev: llm-d-gateway
 spec:
   parentRefs:
-  - name: inference-gateway
+  - name: ${GATEWAY_NAME}
   rules:
   - matches:
     - headers:
@@ -19,7 +19,8 @@ spec:
     backendRefs:
     - group: inference.networking.k8s.io
       kind: InferencePool
-      name: ${POOL_NAME}-decode
+      # Must match the InferencePool name from epd-pool (${POOL_NAME}), not ${POOL_NAME}-decode.
+      name: ${POOL_NAME}
       port: 8000
     timeouts:
       request: 300s
@@ -34,7 +35,7 @@ metadata:
     istio.io/rev: llm-d-gateway
 spec:
   parentRefs:
-  - name: inference-gateway
+  - name: ${GATEWAY_NAME}
   rules:
   - matches:
     - headers:
@@ -44,12 +45,16 @@ spec:
     backendRefs:
     - group: inference.networking.k8s.io
       kind: InferencePool
-      name: multimodal-inference-pool
+      name: ${MULTIMODAL_POOL_NAME}
       port: 8000
     timeouts:
       request: 300s
 ---
 # Default rule: all other requests (from external clients) reach the coordinator.
+# Do NOT add path-only routes for /v1/audio/* or /v1/images/* here — they also
+# match Coordinator→Gateway passthrough hops (which set EPP-Profile: multimodal)
+# and can steal traffic from multimodal-route, causing a request loop / HTTP 431.
+# External RFC paths still hit the Coordinator via this PathPrefix: / catch-all.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -58,13 +63,15 @@ metadata:
     istio.io/rev: llm-d-gateway
 spec:
   parentRefs:
-  - name: inference-gateway
+  - name: ${GATEWAY_NAME}
   rules:
   - matches:
     - path:
         type: PathPrefix
         value: /
     backendRefs:
+    # Coordinator Service name is fixed (deploy/coordinator/components/coordinator/deployment.yaml)
+    # regardless of Gateway provider (Istio on kind, agentgateway on OpenShift).
     - name: llm-d-coordinator
       port: 8080
     timeouts:
