@@ -985,6 +985,22 @@ func TestOpenAIParser_ParseRequest(t *testing.T) {
 			},
 		},
 		{
+			name:    "audio speech request",
+			headers: map[string]string{":path": "/v1/audio/speech"},
+			body: map[string]any{
+				"model": "tts-1",
+				"input": "Hello world",
+				"voice": "alloy",
+			},
+			want: &fwkrh.InferenceRequestBody{
+				Payload: fwkrh.PayloadMap{
+					"model": "tts-1",
+					"input": "Hello world",
+					"voice": "alloy",
+				},
+			},
+		},
+		{
 			name:    "images generations request without model",
 			headers: map[string]string{":path": "/v1/images/generations"},
 			body: map[string]any{
@@ -996,6 +1012,20 @@ func TestOpenAIParser_ParseRequest(t *testing.T) {
 				},
 				Payload: fwkrh.PayloadMap{
 					"prompt": "a dog",
+				},
+			},
+		},
+		{
+			name:    "audio transcriptions request",
+			headers: map[string]string{":path": "/v1/audio/transcriptions"},
+			body: map[string]any{
+				"model":    "whisper-1",
+				"language": "en",
+			},
+			want: &fwkrh.InferenceRequestBody{
+				Payload: fwkrh.PayloadMap{
+					"model":    "whisper-1",
+					"language": "en",
 				},
 			},
 		},
@@ -1033,6 +1063,20 @@ func TestOpenAIParser_ParseRequest(t *testing.T) {
 				"prompt": "",
 			},
 			wantErr: true,
+		},
+		{
+			name:    "generic inference request",
+			headers: map[string]string{":path": "/v1/inference"},
+			body: map[string]any{
+				"model":           "my-model",
+				"routing_profile": "tts",
+			},
+			want: &fwkrh.InferenceRequestBody{
+				Payload: fwkrh.PayloadMap{
+					"model":           "my-model",
+					"routing_profile": "tts",
+				},
+			},
 		},
 	}
 
@@ -1430,6 +1474,9 @@ func TestOpenAIParser_Claims(t *testing.T) {
 			chatCompletionsAPI + "/render",
 			completionsAPI + "/render",
 			imagesGenerationsAPI,
+			audioSpeechAPI,
+			audioTranscriptionsAPI,
+			inferenceAPI,
 		},
 		Protocols: []v1.AppProtocol{v1.AppProtocolH2C, v1.AppProtocolHTTP},
 	}

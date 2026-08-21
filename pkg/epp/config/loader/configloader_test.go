@@ -54,6 +54,7 @@ import (
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/picker/maxscore"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/profilehandler/single"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/kvcacheutilization"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/multimodal"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/prefix"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/queuedepth"
 	testutils "github.com/llm-d/llm-d-router/test/utils"
@@ -86,6 +87,7 @@ func TestLoadRawConfiguration(t *testing.T) {
 	queueScorerWeight := 2.0
 	kvCacheUtilizationScorerWeight := 2.0
 	prefixCacheScorerWeight := 3.0
+	multimodalScorerWeight := 4.0
 
 	tests := []struct {
 		name         string
@@ -218,6 +220,10 @@ func TestLoadRawConfiguration(t *testing.T) {
 						Type: prefix.PrefixCacheScorerPluginType,
 					},
 					{
+						Name: multimodal.ScorerName,
+						Type: multimodal.ScorerName,
+					},
+					{
 						Name: sourcemetrics.MetricsDataSourceType,
 						Type: sourcemetrics.MetricsDataSourceType,
 					},
@@ -241,6 +247,10 @@ func TestLoadRawConfiguration(t *testing.T) {
 							{
 								PluginRef: prefix.PrefixCacheScorerPluginType,
 								Weight:    &prefixCacheScorerWeight,
+							},
+							{
+								PluginRef: multimodal.ScorerName,
+								Weight:    &multimodalScorerWeight,
 							},
 						},
 					},

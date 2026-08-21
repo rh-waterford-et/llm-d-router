@@ -42,7 +42,10 @@ const (
 	completionsAPI     = "completions"
 	embeddingsAPI      = "embeddings"
 	// imagesGenerationsAPI is the OpenAI-compatible image generation endpoint/
-	imagesGenerationsAPI = "images/generations"
+	imagesGenerationsAPI   = "images/generations"
+	audioSpeechAPI         = "audio/speech"
+	audioTranscriptionsAPI = "audio/transcriptions"
+	inferenceAPI           = "inference"
 
 	streamingRespPrefix = "data: "
 	streamingEndMsg     = "data: [DONE]"
@@ -100,6 +103,9 @@ func (p *OpenAIParser) Claims() fwkrh.Claims {
 			chatCompletionsAPI + "/render",
 			completionsAPI + "/render",
 			imagesGenerationsAPI,
+			audioSpeechAPI,
+			audioTranscriptionsAPI,
+			inferenceAPI,
 		},
 		Protocols: []v1.AppProtocol{v1.AppProtocolH2C, v1.AppProtocolHTTP},
 	}
@@ -242,6 +248,15 @@ func determineAPITypeFromPath(path string) string {
 	if request.MatchPathSuffix(path, "/images/generations") {
 		return imagesGenerationsAPI
 	}
+	if request.MatchPathSuffix(path, "/audio/speech") {
+		return audioSpeechAPI
+	}
+	if request.MatchPathSuffix(path, "/audio/transcriptions") {
+		return audioTranscriptionsAPI
+	}
+	if request.MatchPathSuffix(path, "/inference") {
+		return inferenceAPI
+	}
 
 	// Default to completions API for backward compatibility with existing clients and integration tests
 	return completionsAPI
@@ -294,6 +309,10 @@ func extractRequestBody(apiType string, rawBody []byte) (*fwkrh.InferenceRequest
 			return &fwkrh.InferenceRequestBody{Images: &images}, nil
 		}
 		return nil, errors.New("invalid images generations request: must have prompt field")
+
+	case audioSpeechAPI, audioTranscriptionsAPI, inferenceAPI:
+		return &fwkrh.InferenceRequestBody{}, nil
+
 	default:
 		return nil, errors.New("unsupported API endpoint")
 	}

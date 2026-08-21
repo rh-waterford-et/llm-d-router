@@ -61,10 +61,14 @@ func New(cfg config.GatewayConfig) *Client {
 // NewWithTransport creates a Client using the provided transport and base URL.
 // A nil transport is valid; http.Client will fall back to http.DefaultTransport.
 func NewWithTransport(transport *http.Transport, baseURL string) *Client {
-	return &Client{
-		httpClient: &http.Client{Transport: transport},
+	c := &Client{
+		httpClient: &http.Client{},
 		baseURL:    baseURL,
 	}
+	if transport != nil {
+		c.httpClient.Transport = transport
+	}
+	return c
 }
 
 // Request sends an HTTP request to the gateway at the given path. The returned

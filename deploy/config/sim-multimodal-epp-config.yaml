@@ -1,0 +1,21 @@
+# EPP configuration for multimodal routing from a single EPP instance.
+# The modality-filter inspects the request path and selects endpoints whose
+# llm-d.ai/model-arch label matches the path's compatible architectures.
+# Paths not in the mapping (e.g. /v1/chat/completions) pass all endpoints.
+#
+# Usage with kind-dev-env.sh:
+#   EPP_CONFIG=deploy/config/sim-multimodal-epp-config.yaml make env-dev-kind
+apiVersion: llm-d.ai/v1alpha1
+kind: EndpointPickerConfig
+plugins:
+- type: queue-scorer
+- type: modality-filter
+- type: max-score-picker
+- type: single-profile-handler
+schedulingProfiles:
+- name: default
+  plugins:
+  - pluginRef: modality-filter
+  - pluginRef: max-score-picker
+  - pluginRef: queue-scorer
+    weight: 1

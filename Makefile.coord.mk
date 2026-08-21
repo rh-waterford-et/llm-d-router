@@ -266,3 +266,13 @@ image-pull: check-container-tool ## Pull all related images using $(CONTAINER_RU
 	@printf "\033[33;1m==== Pulling Container images ====\033[0m\n"
 	PULL_EPP_IMAGE=false PULL_SIDECAR_IMAGE=false ./scripts/pull_images.sh
 
+##@ Kind Cluster
+
+.PHONY: env-dev-kind-coordinator
+env-dev-kind-coordinator: ## Deploy coordinator, decode EPP, and vLLM simulator to a kind cluster
+	./scripts/kind-coordinator-env.sh
+
+.PHONY: clean-env-dev-kind-coordinator
+clean-env-dev-kind-coordinator: ## Delete the coordinator kind cluster
+	kind delete cluster --name $${CLUSTER_NAME:-llm-d-coordinator-dev}
+

@@ -1,0 +1,59 @@
+# BASE_IMAGE can be overridden at build time, e.g.:
+#   --build-arg BASE_IMAGE=registry.access.redhat.com/ubi9/ubi-micro:9.7
+# Default is distroless/static which includes CA certs and has minimal CVE surface.
+# NOTE: if using scratch, CA certificates must be copied from the builder stage:
+#   COPY --from=go-builder /etc/ssl/certs/ca-bundle.crt /etc/ssl/certs/ca-bundle.crt
+ARG BASE_IMAGE=gcr.io/distroless/static:nonroot
+
+# Go build stage
+FROM --platform=${BUILDPLATFORM} golang:1.26.5 AS go-builder
+
+ARG TARGETOS
+ARG TARGETARCH
+
+WORKDIR /workspace
+
+# Copy the Go Modules manifests
+COPY go.mod go.mod
+COPY go.sum go.sum
+
+# Download dependencies - this layer is cached as long as go.mod/go.sum are unchanged
+RUN go mod download
+
+# Copy the go source
+COPY apix/     apix/
+COPY cmd/      cmd/
+COPY internal/ internal/
+COPY pkg/      pkg/
+COPY version/  version/
+
+# Precompile without version flags so commit-only changes can reuse the
+# expensive compile work from the Docker layer cache.
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
+    -o /dev/null cmd/epp/main.go
+
+# Build EPP with version metadata.
+ARG COMMIT_SHA=unknown
+ARG BUILD_REF
+ARG LDFLAGS="-s -w"
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
+    -ldflags="${LDFLAGS} -X github.com/llm-d/llm-d-router/version.CommitSHA=${COMMIT_SHA} -X github.com/llm-d/llm-d-router/version.BuildRef=${BUILD_REF}" \
+    -o bin/epp cmd/epp/main.go
+
+# Runtime stage
+FROM ${BASE_IMAGE}
+
+WORKDIR /
+
+COPY --from=go-builder /workspace/bin/epp /app/epp
+
+USER 65532:65532
+
+# expose gRPC, health and metrics ports
+EXPOSE 9002
+EXPOSE 9003
+EXPOSE 9090
+# expose port for KV-Events ZMQ SUB socket
+EXPOSE 5557
+
+ENTRYPOINT ["/app/epp"]
