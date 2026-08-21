@@ -179,16 +179,17 @@ The "park in EPP rather than in model server local queue" design is what enables
 ### Key Sequence: Multimodal Passthrough (TTS / STT / Image Generation)
 
 ```
-Client → Inference Gateway → Coordinator (handlePassthrough, no EPP-Profile header)
-       → Inference Gateway → EPP (modality-filter checks llm-d.ai/model-arch label)
+Client → Inference Gateway → Coordinator (handlePassthrough, EPP-Profile: multimodal)
+       → Inference Gateway → multimodal-inference-pool EPP
+                              (modality-filter + multimodal-load-scorer select pod)
        → architecture-matched pod (e.g., autoregressive-tts, diffusion, encoder-decoder-stt)
        ← audio binary / image data / transcript JSON
        ← Coordinator → Client
 ```
 
-`handlePassthrough` is an `httputil.ReverseProxy` that forwards the inbound request to the Inference Gateway verbatim — no body parsing, no `RequestContext`, no pipeline steps, no `EPP-Profile` header. `Content-Type` is preserved as-is (critical for multipart `audio/transcriptions` requests). The response, including binary audio, is streamed back to the client unchanged via `FlushInterval: -1`. The Coordinator's only contribution on this path is request-ID assignment and error logging; all routing intelligence sits in the EPP.
+`handlePassthrough` is an `httputil.ReverseProxy` that forwards the inbound request to the Inference Gateway without pipeline processing — no body parsing, no `RequestContext`, no pipeline steps. It sets `EPP-Profile: multimodal` so the gateway's HTTPRoute distinguishes coordinator-originated passthrough requests from the initial client request (which the catch-all route sends back to the coordinator). `Content-Type` is preserved as-is (critical for multipart `audio/transcriptions` requests). The response, including binary audio, is streamed back to the client unchanged via `FlushInterval: -1`. The Coordinator's only contribution on this path is request-ID assignment and error logging; all routing intelligence sits in the EPP.
 
-The EPP's `modality-filter` (`pkg/epp/framework/plugins/scheduling/filter/modality/`) drops pods whose `llm-d.ai/model-arch` label is incompatible with the request path: `/v1/audio/speech` accepts `omni-llm` or `autoregressive-tts`; `/v1/audio/transcriptions` accepts `encoder-decoder-stt`; `/v1/images/generations` accepts `diffusion`. Embeddings (`/v1/embeddings`) pass through without modality filtering.
+The EPP's `modality-filter` (`pkg/epp/framework/plugins/scheduling/filter/modality/`) hard-drops pods whose `llm-d.ai/model-arch` label is incompatible with the request path: `/v1/audio/speech` accepts `omni-llm` or `autoregressive-tts`; `/v1/audio/transcriptions` accepts `encoder-decoder-stt`; `/v1/images/generations` accepts `diffusion`. Embeddings (`/v1/embeddings`) pass through without modality filtering. The `multimodal-load-scorer` (`pkg/epp/framework/plugins/scheduling/scorer/multimodal/`) complements the filter with soft scoring: architecture-compatible pods score 100.0, incompatible pods score 0.0, and non-multimodal requests score all pods 0.0 (no effect outside the multimodal profile).
 
 ---
 
@@ -263,7 +264,7 @@ The EPP's `modality-filter` (`pkg/epp/framework/plugins/scheduling/filter/modali
 | pd-sidecar → Encode worker | HTTP with multimodal content |
 | Decode worker → Prefill/Encode worker | NIXL RDMA (KV pull), or shared storage, or Mooncake |
 | Client → Coordinator | HTTP/1.1 or HTTP/2 (OpenAI-compatible) |
-| Coordinator → Inference Gateway (per phase) | HTTP with `EPP-Profile: encode \| prefill \| decode`; `header-profile-handler` selects the matching scheduling profile from a single EPP instance |
+| Coordinator → Inference Gateway (per phase) | HTTP with `EPP-Profile: encode \| prefill \| decode` for pipeline phases; `EPP-Profile: multimodal` for passthrough (TTS/STT/image). `header-profile-handler` selects the matching scheduling profile from a single EPP instance |
 
 ---
 
@@ -354,3 +355,4 @@ Recent additions illustrate the pattern:
 - `utilization-filter` (`pkg/epp/framework/plugins/scheduling/filter/utilization/`) — a single plugin that hard-caps any combination of active requests, running requests, waiting queue size, and KV cache utilization. Conditions combine with OR semantics: an endpoint is dropped as soon as any metric exceeds its cap. Replaces and generalizes the earlier `active-request-filter` with no changes to the scheduler.
 - `header-profile-handler` (`pkg/epp/framework/plugins/scheduling/profilehandler/headerprofile/`) — a `ProfileHandler` that runs the scheduling profile named by the `EPP-Profile` request header. Enables one EPP instance to cover all three coordinator phases (encode, prefill, decode) from a single `EndpointPickerConfig`, replacing the earlier three-EPP-instance deployment.
 - `modality-filter` (`pkg/epp/framework/plugins/scheduling/filter/modality/`) — filters pods by `llm-d.ai/model-arch` label based on the request path, routing audio and image requests to architecturally compatible pods without any change to the core scheduler.
+- `multimodal-load-scorer` (`pkg/epp/framework/plugins/scheduling/scorer/multimodal/`) — soft-scores endpoints for the multimodal scheduling profile: architecture-compatible pods receive 100.0, incompatible pods receive 0.0, non-multimodal requests score all pods 0.0. Works alongside `modality-filter` (hard elimination) to rank compatible pods ahead of any that survived the filter with a borderline label match.

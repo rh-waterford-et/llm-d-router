@@ -104,7 +104,10 @@ BUILDER_SOCK_FLAGS = --security-opt label=disable \
 else
 CONTAINER_SOCK ?= /var/run/docker.sock
 ifeq ($(TARGETOS),darwin)
-DOCKER_SOCK_GID := $(shell stat -f '%g' $(CONTAINER_SOCK) 2>/dev/null)
+# On macOS Docker Desktop the host path is a symlink; stat returns the symlink's GID,
+# not the socket's GID inside the container. Docker Desktop presents the mounted socket
+# as root:root (GID 0) with mode 660 inside every container, so use 0 directly.
+DOCKER_SOCK_GID := 0
 else
 DOCKER_SOCK_GID := $(shell stat -c '%g' $(CONTAINER_SOCK) 2>/dev/null)
 endif

@@ -19,21 +19,22 @@ package gateway
 import "strings"
 
 const (
-	PathChatCompletions    = "/v1/chat/completions"
-	PathCompletions        = "/v1/completions"
-	PathAudioSpeech        = "/v1/audio/speech"
+	PathChatCompletions     = "/v1/chat/completions"
+	PathCompletions         = "/v1/completions"
+	PathAudioSpeech         = "/v1/audio/speech"
 	PathAudioTranscriptions = "/v1/audio/transcriptions"
-	PathImagesGenerations  = "/v1/images/generations"
-	PathEmbeddings         = "/v1/embeddings"
-	DefaultGeneratePath    = "/inference/v1/generate"
+	PathImagesGenerations   = "/v1/images/generations"
+	PathEmbeddings          = "/v1/embeddings"
+	DefaultGeneratePath     = "/inference/v1/generate"
 
 	EPPProfileHeader  = "EPP-Profile"
 	ContentTypeHeader = "Content-Type"
 	ContentTypeJSON   = "application/json"
 
-	PhaseEncode  = "encode"
-	PhasePrefill = "prefill"
-	PhaseDecode  = "decode"
+	PhaseEncode     = "encode"
+	PhasePrefill    = "prefill"
+	PhaseDecode     = "decode"
+	PhaseMultimodal = "multimodal"
 )
 
 type RequestFormat int

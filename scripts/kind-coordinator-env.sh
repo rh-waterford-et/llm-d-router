@@ -218,6 +218,12 @@ kubectl --context "${KUBE_CONTEXT}" delete configmap epp-config --ignore-not-fou
 envsubst '$MODEL_NAME' < "${EPP_CONFIG}" > "${TEMP_FILE}"
 kubectl --context "${KUBE_CONTEXT}" create configmap epp-config --from-file=epp-config.yaml="${TEMP_FILE}"
 
+# Multimodal EPP configuration. Uses the modality-filter plugin to route
+# TTS/STT/image requests to pods matching llm-d.ai/model-arch labels.
+kubectl --context "${KUBE_CONTEXT}" delete configmap multimodal-epp-config --ignore-not-found
+kubectl --context "${KUBE_CONTEXT}" create configmap multimodal-epp-config \
+  --from-file=epp-config.yaml=deploy/config/sim-multimodal-epp-config.yaml
+
 # Coordinator configuration. The gateway address is inference-gateway-istio:80,
 # the ClusterIP Service Istio creates automatically for the Gateway resource.
 kubectl --context "${KUBE_CONTEXT}" delete configmap llm-d-coordinator-config --ignore-not-found

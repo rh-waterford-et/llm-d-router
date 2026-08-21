@@ -37,6 +37,7 @@ import (
 	reqcommon "github.com/llm-d/llm-d-router/pkg/common/request"
 
 	"github.com/llm-d/llm-d-router/pkg/coordinator/config"
+	"github.com/llm-d/llm-d-router/pkg/coordinator/gateway"
 	"github.com/llm-d/llm-d-router/pkg/coordinator/pipeline"
 )
 
@@ -143,10 +144,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 }
 
 // handlePassthrough forwards TTS, STT, image generation, and embeddings
-// requests to the Inference Gateway without pipeline processing. The gateway's
-// EPP routes by pod labels (llm-d.ai/model-arch) so no EPP-Phase header is
-// added. Content-Type is preserved as-is (audio/transcriptions sends
-// multipart). Binary audio responses are proxied verbatim.
+// requests to the Inference Gateway without pipeline processing. EPP-Profile is
+// set to PhaseMultimodal so the gateway's HTTPRoute can distinguish
+// coordinator-originated passthrough requests from the initial client request
+// (which the catch-all route sends to the coordinator). Content-Type is
+// preserved as-is (audio/transcriptions sends multipart). Binary audio
+// responses are proxied verbatim.
 func (s *Server) handlePassthrough(w http.ResponseWriter, r *http.Request) {
 	if s.gwClient == nil || s.gwTarget == nil {
 		serverLog.Error(nil, "passthrough: gateway not configured")
@@ -170,6 +173,7 @@ func (s *Server) handlePassthrough(w http.ResponseWriter, r *http.Request) {
 			req.URL.Scheme = target.Scheme
 			req.URL.Host = target.Host
 			req.Host = target.Host
+			req.Header.Set(gateway.EPPProfileHeader, gateway.PhaseMultimodal)
 		},
 		Transport:     s.gwClient.Transport(),
 		FlushInterval: -1,

@@ -9,3 +9,15 @@ spec:
     tls:
       mode: SIMPLE
       insecureSkipVerify: true
+---
+# WARNING: Only use in testing scenarios
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: multimodal-endpoint-picker-insecure-tls
+spec:
+  host: multimodal-endpoint-picker
+  trafficPolicy:
+    tls:
+      mode: SIMPLE
+      insecureSkipVerify: true

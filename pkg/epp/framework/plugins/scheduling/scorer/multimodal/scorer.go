@@ -85,7 +85,3 @@ func (s *MultimodalLoadScorer) Score(ctx context.Context, req *fwksched.Inferenc
 
 	return scores, nil
 }
-
-func init() {
-	fwkplugin.Registry[ScorerName] = MultimodalLoadScorerFactory
-}
