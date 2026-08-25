@@ -1,6 +1,25 @@
 ---
 # Requests with EPP-Phase: decode come from the coordinator's gateway client;
 # route them to the decode InferencePool so the EPP can pick a decode pod.
+#
+# A second rule below sends /v1/chat/completions straight to the same pool,
+# no header required, bypassing the Coordinator entirely for that path. Why:
+# nothing is actually disaggregated today - there's no encode/prefill/decode
+# split happening - so sending plain chat completions through the
+# Coordinator's single-step "decode" pipeline and back through this Gateway
+# a second time bought two hops for zero functional benefit. Base llm-d
+# already serves text straight off the InferencePool/EPP with no Coordinator
+# involvement; this rule just stops undoing that for no reason. Gateway
+# API's route-precedence rules (exact path beats a header-only match with no
+# path condition) make this win for that one path with no manual ordering.
+# Proven live against the openshift-minimal wetlab environment
+# (OPENSHIFT-WETLAB-ADAPTATIONS.md, "chat completions no longer pays the
+# double-hop cost") before being folded back in here.
+#
+# Does NOT generalize to /v1/audio/*, /v1/images/*, or /v1/inference: those
+# are the RFC's actual multimodal/routing-hint paths and must keep going
+# through the Coordinator (passthrough or future real disaggregation) -
+# do not add path-only bypass rules for them here.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -20,6 +39,17 @@ spec:
     - group: inference.networking.k8s.io
       kind: InferencePool
       # Must match the InferencePool name from epd-pool (${POOL_NAME}), not ${POOL_NAME}-decode.
+      name: ${POOL_NAME}
+      port: 8000
+    timeouts:
+      request: 300s
+  - matches:
+    - path:
+        type: Exact
+        value: /v1/chat/completions
+    backendRefs:
+    - group: inference.networking.k8s.io
+      kind: InferencePool
       name: ${POOL_NAME}
       port: 8000
     timeouts:
@@ -55,6 +85,12 @@ spec:
 # match Coordinator→Gateway passthrough hops (which set EPP-Profile: multimodal)
 # and can steal traffic from multimodal-route, causing a request loop / HTTP 431.
 # External RFC paths still hit the Coordinator via this PathPrefix: / catch-all.
+# /v1/chat/completions is the one deliberate exception: the exact-path rule on
+# ${POOL_NAME}-decode-route above outranks this PathPrefix:/ catch-all by
+# Gateway API precedence, so plain chat traffic never reaches here or the
+# Coordinator at all. /v1/inference stays on this catch-all on purpose - its
+# routing depends on request-body content, not path, so it still needs the
+# Coordinator in the loop.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:

@@ -37,9 +37,24 @@ var internalForwardingHeaders = map[string]bool{
 	"epp-profile": true,
 }
 
+// shouldSkipForwardedHeader reports headers that must not be re-sent when the
+// coordinator calls back into the Inference Gateway. Istio/Envoy peer-metadata
+// headers from the inbound hop are large enough to trigger HTTP 431 on the
+// second gateway entry.
+func shouldSkipForwardedHeader(lower string) bool {
+	if hopByHopHeaders[lower] || internalForwardingHeaders[lower] {
+		return true
+	}
+	switch lower {
+	case "content-length", "host", "content-type":
+		return true
+	}
+	return strings.HasPrefix(lower, "x-envoy-")
+}
+
 // ForwardedHeaders returns original request headers suitable for forwarding
-// to upstream services, excluding hop-by-hop headers, Content-Length/Host, and
-// coordinator-owned routing headers.
+// to upstream services, excluding hop-by-hop headers, Content-Length/Host,
+// coordinator-owned routing headers, and Envoy/Istio hop metadata.
 // Keys are normalized to lowercase so they do not collide by case with headers
 // stamped explicitly by forwarding steps (e.g. x-request-id).
 func (rc *RequestContext) ForwardedHeaders() map[string]string {
@@ -49,7 +64,7 @@ func (rc *RequestContext) ForwardedHeaders() map[string]string {
 	}
 	for key, vals := range rc.OriginalHeaders {
 		lower := strings.ToLower(key)
-		if hopByHopHeaders[lower] || internalForwardingHeaders[lower] || lower == "content-length" || lower == "host" || lower == "content-type" {
+		if shouldSkipForwardedHeader(lower) {
 			continue
 		}
 		if len(vals) > 0 {

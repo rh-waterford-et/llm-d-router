@@ -1,0 +1,45 @@
+# gateway.address points at the SAME shared Gateway Service the live
+# openshift-minimal demo uses, but on a DIFFERENT port
+# (${GATEWAY_LISTENER_PORT}) - the port bound to this environment's own
+# listener (sectionName: ${LISTENER_SECTION_NAME}, added via
+# gateway-listener-patch.yaml). Istio's Gateway controller updates the one
+# Service to expose every listener's port, so no new Service is needed for
+# this - see the kustomization.yaml header for why that matters (Service
+# quota was fully committed).
+#
+# Using a different PORT rather than a different HOST for isolation matters
+# because both hit #1 and hit #2 of the double-hop go through whatever this
+# Coordinator's gateway.address says - if it pointed at the same port 80 the
+# live demo's listener uses, this Coordinator's own re-entry requests
+# (stamped EPP-Profile: decode/multimodal - those exact literal values are
+# Go constants, not configurable per-environment) would be evaluated against
+# the live demo's HTTPRoutes too and could get misrouted onto real,
+# GPU-backed bm-001/bm-003 pods. Scoping this environment's HTTPRoutes to a
+# distinct listener via sectionName, and pointing gateway.address at that
+# listener's own port, keeps the two environments' traffic fully separate
+# even though they share one Gateway object and one set of EPP-Profile
+# header values.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openshift-istio-coordinator-config
+data:
+  coordinator.yaml: |
+    log_level: 4
+
+    server:
+      listen_addr: ":8080"
+      read_timeout: 30s
+      write_timeout: 120s
+      shutdown_timeout: 25s
+
+    gateway:
+      address: "http://${GATEWAY_SERVICE_NAME}.${NAMESPACE}.svc.cluster.local:${GATEWAY_LISTENER_PORT}"
+      max_idle_conns_per_host: 100
+      idle_conn_timeout: 90s
+      timeout: 60s
+
+    pipeline:
+      use_openai_format: true
+      steps:
+        - type: decode

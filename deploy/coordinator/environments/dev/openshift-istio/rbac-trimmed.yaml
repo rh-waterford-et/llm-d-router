@@ -1,0 +1,49 @@
+# Trimmed copy of ../../../components/inference-gateway/base/rbac.yaml.
+#
+# REAL FINDING from the live validation run: applying the full epp-reader
+# Role as written there was rejected by the cluster with:
+#
+#   roles.rbac.authorization.k8s.io "epp-reader" is forbidden: user "dkelly"
+#   ... is attempting to grant RBAC permissions not currently held
+#
+# Kubernetes' RBAC escalation check blocks creating a Role containing any
+# rule the creating user doesn't themselves hold, cluster-wide or
+# namespace-wide. dkelly's account (group wetlab-ai-operators) does not
+# hold: tokenreviews.create, subjectaccessreviews.create, or anything in
+# the inference.networking.x-k8s.io / llm-d.ai API groups. It DOES hold
+# pods (get/watch/list) and inference.networking.k8s.io/inferencepools
+# (get/watch/list) - those are kept below, the rest dropped.
+#
+# Consequence: this environment's EPPs run without tokenreview-based
+# metrics auth (fine - METRICS_ENDPOINT_AUTH=none is used here) and without
+# visibility into InferenceObjective/InferenceModelRewrite CRDs (not used
+# by the decode-filter/modality-filter plugins this environment's
+# epp-config.yaml/multimodal-epp-config.yaml select). If your account
+# has broader RBAC (e.g. cluster-admin, or a namespace admin role that
+# includes those API groups), use the full rbac.yaml from
+# components/inference-gateway/base/ instead - this trimmed copy exists
+# specifically to document and work around the permission gap on THIS
+# cluster with THIS account, not because the fuller role is wrong.
+#
+# See GATEWAY-ARCHITECTURE-KNOWN-RISKS.md item 9.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: epp-reader
+rules:
+- apiGroups:
+  - "inference.networking.k8s.io"
+  resources:
+  - "inferencepools"
+  verbs:
+  - "get"
+  - "watch"
+  - "list"
+- apiGroups:
+  - ""
+  resources:
+  - "pods"
+  verbs:
+  - "get"
+  - "watch"
+  - "list"

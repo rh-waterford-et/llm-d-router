@@ -173,6 +173,13 @@ func (s *Server) handlePassthrough(w http.ResponseWriter, r *http.Request) {
 			req.URL.Scheme = target.Scheme
 			req.URL.Host = target.Host
 			req.Host = target.Host
+			// Drop inbound Envoy/Istio hop metadata before re-entering the gateway.
+			// Those headers are large and cause HTTP 431 on the second hop.
+			for k := range req.Header {
+				if strings.HasPrefix(strings.ToLower(k), "x-envoy-") {
+					req.Header.Del(k)
+				}
+			}
 			req.Header.Set(gateway.EPPProfileHeader, gateway.PhaseMultimodal)
 		},
 		Transport:     s.gwClient.Transport(),

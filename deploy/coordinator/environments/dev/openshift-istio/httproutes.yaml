@@ -1,0 +1,100 @@
+---
+# All three HTTPRoutes below use parentRefs.sectionName to attach ONLY to
+# this environment's dedicated listener (${LISTENER_SECTION_NAME}) on the
+# shared Gateway/${GATEWAY_NAME} - see kustomization.yaml and
+# gateway-listener-patch.yaml for why. A route with sectionName set is only
+# evaluated against traffic arriving on that specific listener/port; it is
+# invisible to traffic on the live demo's "http" listener (port 80), and
+# vice versa. This is what makes it safe to share one Gateway object with
+# the live openshift-minimal demo.
+#
+# Same routing pattern as ../kind-istio/httproutes.yaml (decode header ->
+# text pool, multimodal header -> multimodal pool, path catch-all ->
+# Coordinator, chat-completions exact-path bypass) - see that file for the
+# full rationale. This is the OpenShift-real validation of that exact
+# pattern; only the parentRefs and backend Service names differ.
+#
+# Requests with EPP-Profile: decode come from the coordinator's gateway
+# client; route them to the decode InferencePool so the EPP can pick a
+# decode pod. The second rule sends /v1/chat/completions straight to the
+# same pool, no header required, bypassing the Coordinator entirely for
+# that path - see kind-istio/httproutes.yaml for the full rationale (route
+# precedence: exact path beats a header-only match with no path condition).
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: ${POOL_NAME}-decode-route
+spec:
+  parentRefs:
+  - name: ${GATEWAY_NAME}
+    sectionName: ${LISTENER_SECTION_NAME}
+  rules:
+  - matches:
+    - headers:
+      - type: Exact
+        name: EPP-Profile
+        value: decode
+    backendRefs:
+    - group: inference.networking.k8s.io
+      kind: InferencePool
+      name: ${POOL_NAME}
+      port: 8000
+    timeouts:
+      request: 300s
+  - matches:
+    - path:
+        type: Exact
+        value: /v1/chat/completions
+    backendRefs:
+    - group: inference.networking.k8s.io
+      kind: InferencePool
+      name: ${POOL_NAME}
+      port: 8000
+    timeouts:
+      request: 300s
+---
+# Passthrough requests from the coordinator carry EPP-Profile: multimodal;
+# route them to the multimodal InferencePool so the EPP can pick a TTS/STT pod.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: ${MULTIMODAL_POOL_NAME}-route
+spec:
+  parentRefs:
+  - name: ${GATEWAY_NAME}
+    sectionName: ${LISTENER_SECTION_NAME}
+  rules:
+  - matches:
+    - headers:
+      - type: Exact
+        name: EPP-Profile
+        value: multimodal
+    backendRefs:
+    - group: inference.networking.k8s.io
+      kind: InferencePool
+      name: ${MULTIMODAL_POOL_NAME}
+      port: 8000
+    timeouts:
+      request: 300s
+---
+# Default rule: all other requests on this listener reach the Coordinator.
+# Do NOT add path-only routes for /v1/audio/* or /v1/images/* here - same
+# 431-loop hazard documented in kind-istio/httproutes.yaml.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: ${POOL_NAME}-coordinator-route
+spec:
+  parentRefs:
+  - name: ${GATEWAY_NAME}
+    sectionName: ${LISTENER_SECTION_NAME}
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - name: openshift-istio-coordinator
+      port: 8080
+    timeouts:
+      request: 300s

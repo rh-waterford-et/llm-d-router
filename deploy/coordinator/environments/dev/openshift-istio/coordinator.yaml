@@ -1,0 +1,88 @@
+# Coordinator instance for this environment, named distinctly from
+# components/coordinator's "llm-d-coordinator" (Deployment+Service+SA) so it
+# cannot collide with the live openshift-minimal demo's Coordinator, which
+# uses that exact fixed name in the same wetlab-ai namespace. Otherwise
+# identical to components/coordinator/deployment.yaml - kept as a local
+# copy rather than a kustomize nameReference/prefix so the rename is
+# explicit and obvious on read, not implicit kustomize magic.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: openshift-istio-coordinator
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openshift-istio-coordinator
+  labels:
+    app: openshift-istio-coordinator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: openshift-istio-coordinator
+  template:
+    metadata:
+      labels:
+        app: openshift-istio-coordinator
+    spec:
+      serviceAccountName: openshift-istio-coordinator
+      terminationGracePeriodSeconds: 30
+      containers:
+      - name: coordinator
+        image: ${COORDINATOR_IMAGE}
+        imagePullPolicy: IfNotPresent
+        # Explicit, small limits so this container doesn't fall through to
+        # this namespace's LimitRange default (4 CPU / 8Gi) - a real find
+        # from the live validation run: none of components/ sets any
+        # resources, and multiplying that default across 6 new containers
+        # blew the namespace's 32-core limits.cpu quota instantly. See
+        # GATEWAY-ARCHITECTURE-KNOWN-RISKS.md item 9.
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        args:
+        - --config
+        - /etc/coordinator/coordinator.yaml
+        ports:
+        - name: http
+          containerPort: 8080
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        volumeMounts:
+        - name: config
+          mountPath: /etc/coordinator
+      volumes:
+      - name: config
+        configMap:
+          name: openshift-istio-coordinator-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openshift-istio-coordinator
+  labels:
+    app: openshift-istio-coordinator
+spec:
+  selector:
+    app: openshift-istio-coordinator
+  type: ClusterIP
+  ports:
+  - name: http
+    protocol: TCP
+    port: 8080
+    targetPort: 8080

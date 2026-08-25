@@ -1,0 +1,199 @@
+# Coordinator OpenShift/Istio development environment (EPD, no disaggregation).
+#
+# Replaces the old ../openshift-agentgateway/ stub (removed - it was never
+# applied to a live cluster, see GATEWAY-ARCHITECTURE-KNOWN-RISKS.md item 3).
+# This environment reuses the exact same shared components as ../kind-istio/
+# (two InferencePools + EPPs, decode/TTS/STT sim workers, shared RBAC) and was
+# validated live against the wetlab-ai OpenShift cluster's real
+# `data-science-gateway-class` Istio Gateway implementation - see
+# GATEWAY-ARCHITECTURE-KNOWN-RISKS.md item 3.
+#
+# Deliberately different from ../openshift-minimal/, which is the wetlab
+# DEMO environment: hand-patches a colleague's Helm-managed HTTPRoute/EPP,
+# uses ONE shared InferencePool, and routes to two pre-existing real
+# (GPU-backed) vLLM Deployments. This environment is the from-scratch,
+# fully kustomize-owned reference stack proving the *design pattern* (not
+# the demo), which is why it deliberately reuses the same components/
+# building blocks as kind-istio rather than anything from openshift-minimal.
+#
+# Does NOT create its own Gateway. wetlab-ai's Gateway/InferencePool Service
+# quota was already fully committed to the live openshift-minimal demo when
+# this was built (see the "single namespace" constraint in
+# GATEWAY-ARCHITECTURE-KNOWN-RISKS.md), so this environment attaches its
+# HTTPRoutes to a SECOND LISTENER (sectionName: ${LISTENER_SECTION_NAME}) on
+# the existing shared `Gateway/${GATEWAY_NAME}` instead of creating a new
+# Gateway object - see gateway-listener-patch.yaml (applied out-of-band, not
+# by this kustomization, same reasoning as openshift-minimal's Gateway not
+# being kustomize-managed here: it's a shared, pre-existing object). This
+# fully isolates this environment's routing/traffic from the live demo's
+# listener - see README.md for why that isolation holds.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+- rbac-trimmed.yaml
+- ../../../components/inference-gateway/epd-pool/
+- ../../../components/inference-gateway/multimodal-pool/
+- ../../../components/vllm-decode/
+- ../../../components/vllm-multimodal/
+- coordinator.yaml
+- coordinator-configmap.yaml
+- epp-configs.yaml
+- httproutes.yaml
+
+components:
+- ../../../components/overlays/simulator-kind/
+
+# None of the shared components set container resources, so this
+# namespace's LimitRange default (4 CPU / 8Gi per container) gets injected
+# and instantly blows the 32-core limits.cpu quota across 6 new containers
+# - a real finding from the live validation run (see
+# GATEWAY-ARCHITECTURE-KNOWN-RISKS.md item 9). Patched here, locally, rather
+# than in the shared components themselves, so kind-istio's footprint is
+# unaffected. Also bumps the sim workers' CPU request from 10m to 50m - this
+# namespace's LimitRange enforces a 50m per-container minimum, which the
+# shared vllm-multimodal component's 10m falls below.
+patches:
+# NOTE: target.name is matched as a regex (not a literal string), so
+# "${EPP_NAME}" - a literal, un-substituted placeholder at kustomize-build
+# time - has to be regex-escaped ('\$\\{EPP_NAME\\}') or it silently fails
+# to match: unescaped, the "$" is an end-of-string anchor, so the pattern
+# "${EPP_NAME}" means "match end-of-string, then require more characters
+# after it" - impossible, so it never matches even though the literal
+# strings are identical. Cost real time to find - kustomize gives no
+# warning when a patch target matches zero resources.
+- target:
+    kind: Deployment
+    name: '\$\{EPP_NAME\}'
+  patch: |-
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: ${EPP_NAME}
+    spec:
+      template:
+        spec:
+          containers:
+          - name: epp
+            # 500m/512Mi (this file's original value) turned out tight enough
+            # to matter under load, so bumped to match the live
+            # openshift-minimal EPP's own limit (2 CPU/2Gi) - see
+            # GATEWAY-ARCHITECTURE-KNOWN-RISKS.md item 9. Requests stay
+            # modest (250m/512Mi); only the ceiling moved. This alone did NOT
+            # fix the actual crash-loop seen live (see probe timing below) -
+            # keeping it anyway since 500m is genuinely too little headroom
+            # for this container regardless.
+            resources:
+              requests: {cpu: 250m, memory: 512Mi}
+              limits: {cpu: 2, memory: 2Gi}
+            # The REAL crash-loop cause, found live: the shared epp.yaml's
+            # probe timing (initialDelaySeconds: 5, periodSeconds: 10,
+            # default failureThreshold: 3 -> killed ~35s after start) assumes
+            # kind's tiny local API server. On this cluster, EPP startup
+            # blocks on a live discovery call
+            # (pkg/epp/server/controller_config.go's PopulateControllerConfig,
+            # checking whether the InferenceObjective CRD exists) that took
+            # 60-90+ seconds under normal-but-not-idle cluster load - well
+            # past 35s every time, so the container was killed and restarted
+            # before that one-time startup call could ever finish, forever.
+            # Not fixed by more CPU (the process is blocked on a network
+            # call, not compute-bound) - fixed by giving startup enough wall-
+            # clock runway to actually finish once. Patched here, not in the
+            # shared epp.yaml, since kind's fast local API server has never
+            # needed this slack.
+            livenessProbe:
+              grpc:
+                port: 9003
+                service: envoy.service.ext_proc.v3.ExternalProcessor
+              initialDelaySeconds: 60
+              periodSeconds: 15
+              failureThreshold: 10
+              timeoutSeconds: 5
+            readinessProbe:
+              grpc:
+                port: 9003
+                service: envoy.service.ext_proc.v3.ExternalProcessor
+              initialDelaySeconds: 60
+              periodSeconds: 15
+              failureThreshold: 10
+              timeoutSeconds: 5
+- target:
+    kind: Deployment
+    name: '\$\{MULTIMODAL_EPP_NAME\}'
+  patch: |-
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: ${MULTIMODAL_EPP_NAME}
+    spec:
+      template:
+        spec:
+          containers:
+          - name: epp
+            resources:
+              requests: {cpu: 250m, memory: 512Mi}
+              limits: {cpu: 2, memory: 2Gi}
+            livenessProbe:
+              grpc:
+                port: 9003
+                service: envoy.service.ext_proc.v3.ExternalProcessor
+              initialDelaySeconds: 60
+              periodSeconds: 15
+              failureThreshold: 10
+              timeoutSeconds: 5
+            readinessProbe:
+              grpc:
+                port: 9003
+                service: envoy.service.ext_proc.v3.ExternalProcessor
+              initialDelaySeconds: 60
+              periodSeconds: 15
+              failureThreshold: 10
+              timeoutSeconds: 5
+- target:
+    kind: Deployment
+    name: vllm-d
+  patch: |-
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: vllm-d
+    spec:
+      template:
+        spec:
+          containers:
+          - name: vllm
+            resources:
+              requests: {cpu: 50m, memory: 256Mi}
+              limits: {cpu: 500m, memory: 512Mi}
+- target:
+    kind: Deployment
+    name: vllm-tts-sim
+  patch: |-
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: vllm-tts-sim
+    spec:
+      template:
+        spec:
+          containers:
+          - name: vllm-sim
+            resources:
+              requests: {cpu: 50m, memory: 256Mi}
+              limits: {cpu: 500m, memory: 512Mi}
+- target:
+    kind: Deployment
+    name: vllm-stt-sim
+  patch: |-
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: vllm-stt-sim
+    spec:
+      template:
+        spec:
+          containers:
+          - name: vllm-sim
+            resources:
+              requests: {cpu: 50m, memory: 256Mi}
+              limits: {cpu: 500m, memory: 512Mi}

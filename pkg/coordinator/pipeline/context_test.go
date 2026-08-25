@@ -21,18 +21,20 @@ import (
 	"testing"
 )
 
+const testRequestID = "abc-123"
+
 func TestForwardedHeaders_NormalizesKeysToLowercase(t *testing.T) {
 	rc := &RequestContext{
 		OriginalHeaders: http.Header{
-			"X-Request-Id":    {"abc-123"},
+			"X-Request-Id":    {testRequestID},
 			"X-Forwarded-For": {"10.0.0.1"},
 		},
 	}
 
 	out := rc.ForwardedHeaders()
 
-	if got := out["x-request-id"]; got != "abc-123" {
-		t.Fatalf("x-request-id = %q, want %q", got, "abc-123")
+	if got := out["x-request-id"]; got != testRequestID {
+		t.Fatalf("x-request-id = %q, want %q", got, testRequestID)
 	}
 	if _, ok := out["X-Request-Id"]; ok {
 		t.Errorf("canonical key X-Request-Id should not be present; keys must be lowercased")
@@ -47,9 +49,9 @@ func TestForwardedHeaders_NormalizesKeysToLowercase(t *testing.T) {
 // distinct map entries.
 func TestForwardedHeaders_RequestIDDoesNotDuplicateOnRestamp(t *testing.T) {
 	rc := &RequestContext{
-		RequestID: "abc-123",
+		RequestID: testRequestID,
 		OriginalHeaders: http.Header{
-			"X-Request-Id": {"abc-123"},
+			"X-Request-Id": {testRequestID},
 		},
 	}
 
@@ -74,7 +76,7 @@ func TestForwardedHeaders_ExcludesHopByHopAndContentHeaders(t *testing.T) {
 			"Content-Length": {"42"},
 			"Host":           {"example.com"},
 			"Content-Type":   {"application/json"},
-			"X-Request-Id":   {"abc-123"},
+			"X-Request-Id":   {testRequestID},
 		},
 	}
 
@@ -94,7 +96,7 @@ func TestForwardedHeaders_ExcludesInternalRoutingHeaders(t *testing.T) {
 	rc := &RequestContext{
 		OriginalHeaders: http.Header{
 			"EPP-Profile":   {"decode"},
-			"X-Request-Id":  {"abc-123"},
+			"X-Request-Id":  {testRequestID},
 			"Authorization": {"Bearer token"},
 		},
 	}
@@ -104,11 +106,36 @@ func TestForwardedHeaders_ExcludesInternalRoutingHeaders(t *testing.T) {
 	if _, ok := out["epp-profile"]; ok {
 		t.Fatalf("epp-profile should not be forwarded: %v", out)
 	}
-	if got := out["x-request-id"]; got != "abc-123" {
-		t.Errorf("x-request-id = %q, want %q", got, "abc-123")
+	if got := out["x-request-id"]; got != testRequestID {
+		t.Errorf("x-request-id = %q, want %q", got, testRequestID)
 	}
 	if got := out["authorization"]; got != "Bearer token" {
 		t.Errorf("authorization = %q, want %q", got, "Bearer token")
+	}
+}
+
+func TestForwardedHeaders_ExcludesEnvoyHopMetadata(t *testing.T) {
+	rc := &RequestContext{
+		OriginalHeaders: http.Header{
+			"X-Envoy-Peer-Metadata": {"huge-blob"},
+			"X-Envoy-Attempt-Count": {"1"},
+			"X-Request-Id":          {testRequestID},
+			"User-Agent":            {"curl"},
+		},
+	}
+
+	out := rc.ForwardedHeaders()
+
+	for _, excluded := range []string{"x-envoy-peer-metadata", "x-envoy-attempt-count"} {
+		if _, ok := out[excluded]; ok {
+			t.Errorf("header %q should be excluded from forwarded headers", excluded)
+		}
+	}
+	if got := out["x-request-id"]; got != testRequestID {
+		t.Errorf("x-request-id = %q, want %q", got, testRequestID)
+	}
+	if got := out["user-agent"]; got != "curl" {
+		t.Errorf("user-agent = %q, want %q", got, "curl")
 	}
 }
 

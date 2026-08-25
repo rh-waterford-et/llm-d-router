@@ -1,0 +1,32 @@
+# NOT applied by this environment's kustomization (deliberately - see
+# kustomization.yaml header). The shared Gateway/${GATEWAY_NAME} is a
+# pre-existing live object owned by the openshift-minimal demo's setup, not
+# by this environment. This is a JSON6902 patch adding a second listener to
+# it, applied out-of-band:
+#
+#   oc patch gateway ${GATEWAY_NAME} -n ${NAMESPACE} --type=json \
+#     --patch-file=gateway-listener-patch.yaml
+#
+# Adding a listener is additive - it does not touch or remove the existing
+# "http" listener the live demo depends on. Istio's Gateway controller
+# updates the Gateway's single managed Service to expose the new listener's
+# port alongside the existing one; this may briefly restart/reconcile the
+# gateway proxy pods (seconds-scale blip, self-healing - same class of
+# transient reconcile behavior already documented for this Gateway
+# elsewhere in this repo's history, not a new failure mode).
+#
+# Roll back with:
+#   oc patch gateway ${GATEWAY_NAME} -n ${NAMESPACE} --type=json \
+#     --patch='[{"op":"remove","path":"/spec/listeners/1"}]'
+# (only safe immediately after applying this patch, before anyone else adds
+# a third listener - verify index 1 is still this one with
+# `oc get gateway ${GATEWAY_NAME} -o jsonpath='{.spec.listeners}'` first)
+- op: add
+  path: /spec/listeners/-
+  value:
+    name: ${LISTENER_SECTION_NAME}
+    port: ${GATEWAY_LISTENER_PORT}
+    protocol: HTTP
+    allowedRoutes:
+      namespaces:
+        from: Same

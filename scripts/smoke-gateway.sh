@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Smoke-test the coordinator + Gateway RFC path on kind (Istio) or OpenShift
-# (agentgateway).
+# Smoke-test the coordinator + Gateway RFC path on kind or OpenShift. Both
+# platforms use an Istio-backed Gateway (see apply-gateway-config.sh's header
+# for why the old agentgateway option was retired and removed).
 #
 # Proves routing (not model quality). TTS/STT sims may return 404; we assert
 # the request reached the right pod via logs, and that chat returns 200 JSON.
@@ -10,12 +11,19 @@
 #              ./scripts/apply-gateway-config.sh   # optional refresh
 #   openshift: coordinator stack + Gateway already deployed;
 #              PLATFORM=openshift ./scripts/apply-gateway-config.sh
+#              (or deploy/coordinator/environments/dev/openshift-istio/ directly
+#              if sharing an existing Gateway via a second listener)
 #
 # Usage:
 #   ./scripts/smoke-gateway.sh                                  # kind
 #   PLATFORM=openshift KUBE_CONTEXT=... GATEWAY_URL=https://... \
-#     POOL_NAME=... GATEWAY_NAME=llm-d-inference-gateway \
+#     POOL_NAME=... GATEWAY_NAME=inference-gateway \
 #     ./scripts/smoke-gateway.sh                                # openshift
+#
+# COORDINATOR_DEPLOY (default: deploy/llm-d-coordinator) names the Coordinator
+# Deployment/logs source for check 1b. Override it for environments that
+# rename the Coordinator, e.g.:
+#   COORDINATOR_DEPLOY=deploy/openshift-istio-coordinator ./scripts/smoke-gateway.sh
 
 set -euo pipefail
 
@@ -31,7 +39,7 @@ case "${PLATFORM}" in
     CTX="${KUBE_CONTEXT:-$(kubectl config current-context)}"
     : "${GATEWAY_URL:?GATEWAY_URL must be set for PLATFORM=openshift (external Gateway URL or port-forward address)}"
     BASE="${GATEWAY_URL}"
-    GATEWAY_NAME="${GATEWAY_NAME:-llm-d-inference-gateway}"
+    GATEWAY_NAME="${GATEWAY_NAME:-inference-gateway}"
     ;;
   *)
     echo "ERROR: PLATFORM must be 'kind' or 'openshift', got '${PLATFORM}'" >&2
@@ -63,8 +71,12 @@ kubectl --context "${CTX}" cluster-info >/dev/null 2>&1 \
 echo "==> Smoke test against ${BASE} (platform=${PLATFORM}, context ${CTX}, namespace ${NAMESPACE})"
 echo
 
-# --- 1. Chat (full Coordinator → decode pool path) ---------------------------
-echo "1) Chat completions (expect HTTP 200 + assistant content)"
+# --- 1. Chat (direct-to-pool bypass: exact-path HTTPRoute skips the Coordinator) ---
+# /v1/chat/completions no longer traverses the Coordinator at all — see the
+# ${POOL_NAME}-decode-route exact-path rule and GATEWAY-ARCHITECTURE-KNOWN-RISKS.md
+# item 2. This check only proves the Gateway → InferencePool leg; it does NOT
+# exercise the Coordinator's decode pipeline step. Check 1b below covers that.
+echo "1) Chat completions — direct-to-pool bypass (expect HTTP 200 + assistant content)"
 CHAT_CODE="$(curl -sS -o /tmp/smoke-chat.json -w '%{http_code}' \
   "${BASE}/v1/chat/completions" \
   -H 'Content-Type: application/json' \
@@ -73,6 +85,32 @@ if [[ "${CHAT_CODE}" == "200" ]] && jq -e '.choices[0].message.content' /tmp/smo
   green "chat → ${CHAT_CODE} ($(jq -r '.choices[0].message.content' /tmp/smoke-chat.json | head -c 40))"
 else
   red "chat → ${CHAT_CODE} (body: $(head -c 120 /tmp/smoke-chat.json))"
+fi
+
+# --- 1b. Legacy /v1/completions (full Coordinator → decode pipeline path) ----
+# The chat-completions bypass (check 1) only added an exact-path rule for
+# /v1/chat/completions; /v1/completions still falls through to the
+# ${POOL_NAME}-coordinator-route PathPrefix:/ catch-all and is handled by
+# handleInference -> pipeline.Execute -> DecodeStep (pkg/coordinator/steps/decode.go),
+# which stamps EPP-Profile: decode and re-enters the gateway for the second hop.
+# This is the smoke-test coverage GATEWAY-ARCHITECTURE-KNOWN-RISKS.md item 6
+# calls for: with chat traffic bypassing the Coordinator, nothing else in this
+# script exercises DecodeStep unless this check does. Grepping the Coordinator's
+# own log (not just the HTTP status) confirms the pipeline step actually ran,
+# not just that some 200 came back from somewhere.
+echo "1b) Legacy /v1/completions (expect HTTP 200 + Coordinator's decode step to run)"
+COMPLETIONS_CODE="$(curl -sS -o /tmp/smoke-completions.json -w '%{http_code}' \
+  "${BASE}/v1/completions" \
+  -H 'Content-Type: application/json' \
+  -d "{\"model\":\"${MODEL}\",\"prompt\":\"hi\",\"max_tokens\":5}")"
+sleep 1
+COORDINATOR_DEPLOY="${COORDINATOR_DEPLOY:-deploy/llm-d-coordinator}"
+if [[ "${COMPLETIONS_CODE}" == "200" ]] \
+    && kubectl --context "${CTX}" -n "${NAMESPACE}" logs "${COORDINATOR_DEPLOY}" --since=15s 2>/dev/null \
+      | grep -aE '"logger":"[a-z.]*decode".*"msg":"sending request"' >/dev/null; then
+  green "completions → ${COMPLETIONS_CODE}, Coordinator decode step ran (pipeline not bypassed)"
+else
+  red "completions → ${COMPLETIONS_CODE}, Coordinator decode step NOT observed in logs (body: $(head -c 120 /tmp/smoke-completions.json))"
 fi
 
 # --- 2. TTS routing (Coordinator passthrough → multimodal EPP → TTS pod) -----
@@ -124,10 +162,10 @@ fi
 
 # --- 5. No 431 loop ----------------------------------------------------------
 echo "5) No HTTP 431 (request-loop / header blow-up)"
-if [[ "${CHAT_CODE}" == "431" || "${TTS_CODE}" == "431" || "${STT_CODE}" == "431" ]]; then
+if [[ "${CHAT_CODE}" == "431" || "${COMPLETIONS_CODE}" == "431" || "${TTS_CODE}" == "431" || "${STT_CODE}" == "431" ]]; then
   red "saw HTTP 431 — check for path routes stealing EPP-Profile: multimodal"
 else
-  green "no 431 on chat/TTS/STT"
+  green "no 431 on chat/completions/TTS/STT"
 fi
 
 # --- 6. Gateway API objects Ready ---------------------------------------------
