@@ -137,7 +137,6 @@ import (
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/loadaware"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/loraaffinity"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/mmcacheaffinity"
-	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/multimodal" // register multimodal scorer plugin
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/nohitlru"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/preciseprefixcache"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/prefix"
@@ -650,7 +649,6 @@ func (r *Runner) registerInTreePlugins() {
 	fwkplugin.Register(kvcacheutilization.MultiClusterScorerType, fwkplugin.StabilityAlpha, kvcacheutilization.MultiClusterScorerFactory)
 	fwkplugin.Register(prefix.MultiClusterScorerType, fwkplugin.StabilityAlpha, prefix.MultiClusterScorerFactory)
 	fwkplugin.Register(reqdataprodprefix.MultiClusterPluginType, fwkplugin.StabilityAlpha, reqdataprodprefix.MultiClusterFactory)
-	fwkplugin.Register(multimodal.ScorerName, fwkplugin.StabilityAlpha, multimodal.MultimodalLoadScorerFactory)
 
 	// Flow Control plugins
 	// Beta
