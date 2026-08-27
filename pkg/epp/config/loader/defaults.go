@@ -48,7 +48,6 @@ func loadDefaultConfig() *configapi.EndpointPickerConfig {
 	queueScorerWeight := 2.0
 	kvCacheUtilizationScorerWeight := 2.0
 	prefixCacheScorerWeight := 3.0
-
 	return &configapi.EndpointPickerConfig{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: configapi.GroupVersion.String(),

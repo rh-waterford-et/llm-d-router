@@ -16,16 +16,20 @@ limitations under the License.
 
 package gateway
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/llm-d/llm-d-router/pkg/common"
+)
 
 const (
-	PathChatCompletions     = "/v1/chat/completions"
-	PathCompletions         = "/v1/completions"
-	PathAudioSpeech         = "/v1/audio/speech"
-	PathAudioTranscriptions = "/v1/audio/transcriptions"
-	PathImagesGenerations   = "/v1/images/generations"
-	PathEmbeddings          = "/v1/embeddings"
-	DefaultGeneratePath     = "/inference/v1/generate"
+	PathChatCompletions     = common.ChatCompletionsPath
+	PathCompletions         = common.CompletionsPath
+	PathAudioSpeech         = common.AudioSpeechPath
+	PathAudioTranscriptions = common.AudioTranscriptionsPath
+	PathImagesGenerations   = common.ImagesGenerationsPath
+	PathEmbeddings          = common.EmbeddingsPath
+	DefaultGeneratePath     = common.GeneratePath
 
 	EPPProfileHeader  = "EPP-Profile"
 	ContentTypeHeader = "Content-Type"

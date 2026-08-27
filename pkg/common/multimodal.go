@@ -20,21 +20,12 @@ const (
 	// ModelArchLabel is the pod label indicating the model architecture category.
 	ModelArchLabel = "llm-d.ai/model-arch"
 
-	// ModalityLabel is the pod label indicating supported modality.
-	ModalityLabel = "llm-d.ai/modality"
-
 	// Model architecture values.
 	ModelArchOmniLLM        = "omni-llm"
 	ModelArchDiffusion      = "diffusion"
 	ModelArchAutoRegressTTS = "autoregressive-tts"
 	ModelArchEncoderDecSTT  = "encoder-decoder-stt"
 	ModelArchAutoRegressLLM = "autoregressive-llm"
-
-	// API paths for multimodal endpoints.
-	AudioSpeechPath         = "/v1/audio/speech"
-	AudioTranscriptionsPath = "/v1/audio/transcriptions"
-	ImagesGenerationsPath   = "/v1/images/generations"
-	InferencePath           = "/v1/inference"
 
 	// EnvoyPathHeader is the pseudo-header Envoy uses to pass the request path.
 	EnvoyPathHeader = ":path"
