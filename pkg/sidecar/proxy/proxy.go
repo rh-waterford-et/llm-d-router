@@ -37,6 +37,7 @@ import (
 	"golang.org/x/sync/errgroup"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/llm-d/llm-d-router/pkg/common"
 	reqcommon "github.com/llm-d/llm-d-router/pkg/common/request"
 	"github.com/llm-d/llm-d-router/pkg/sidecar/constants"
 )
@@ -121,6 +122,14 @@ const (
 	APITypeResponses
 	// APITypeGenerate is vLLM's token-in generate API (/inference/v1/generate)
 	APITypeGenerate
+	// APITypeAudioSpeech is the TTS API (/v1/audio/speech)
+	APITypeAudioSpeech
+	// APITypeAudioTranscriptions is the STT API (/v1/audio/transcriptions)
+	APITypeAudioTranscriptions
+	// APITypeImagesGenerations is the image generation API (/v1/images/generations)
+	APITypeImagesGenerations
+	// APITypeInference is the generic inference API (/v1/inference)
+	APITypeInference
 )
 
 // String implements fmt.Stringer so structured logs show readable API names.
@@ -132,6 +141,14 @@ func (a APIType) String() string {
 		return "responses"
 	case APITypeGenerate:
 		return "generate"
+	case APITypeAudioSpeech:
+		return "audio_speech"
+	case APITypeAudioTranscriptions:
+		return "audio_transcriptions"
+	case APITypeImagesGenerations:
+		return "images_generations"
+	case APITypeInference:
+		return "inference"
 	default:
 		return fmt.Sprintf("APIType(%d)", int(a))
 	}
@@ -629,6 +646,10 @@ func (s *Server) createRoutes() *http.ServeMux {
 	mux.HandleFunc("POST "+MessagesPath, s.disaggregatedPrefillHandler(APITypeChatCompletions))
 	mux.HandleFunc("POST "+ResponsesPath, s.disaggregatedPrefillHandler(APITypeResponses))
 	mux.HandleFunc("POST "+GeneratePath, s.disaggregatedPrefillHandler(APITypeGenerate))
+	mux.HandleFunc("POST "+common.AudioSpeechPath, s.disaggregatedPrefillHandler(APITypeAudioSpeech))
+	mux.HandleFunc("POST "+common.AudioTranscriptionsPath, s.disaggregatedPrefillHandler(APITypeAudioTranscriptions))
+	mux.HandleFunc("POST "+common.ImagesGenerationsPath, s.disaggregatedPrefillHandler(APITypeImagesGenerations))
+	mux.HandleFunc("POST "+common.InferencePath, s.disaggregatedPrefillHandler(APITypeInference))
 
 	s.decoderProxy = s.createDecoderProxyHandler(s.config.DecoderURL, s.config.InsecureSkipVerifyForDecoder)
 
