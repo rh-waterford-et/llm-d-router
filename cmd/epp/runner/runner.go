@@ -118,6 +118,7 @@ import (
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/loraaffinity"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/mmcacheaffinity"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/nohitlru"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/omni"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/preciseprefixcache"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/prefix"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/queuedepth"
@@ -525,6 +526,7 @@ func (r *Runner) registerInTreePlugins() {
 	fwkplugin.Register(tts.TTSScorerType, tts.TTSScorerFactory)
 	fwkplugin.Register(stt.STTScorerType, stt.STTScorerFactory)
 	fwkplugin.Register(diffusion.DiffusionScorerType, diffusion.DiffusionScorerFactory)
+	fwkplugin.Register(omni.OmniLLMScorerType, omni.OmniLLMScorerFactory)
 
 	// Flow Control plugins
 	fwkplugin.Register(globalstrict.GlobalStrictFairnessPolicyType, globalstrict.GlobalStrictFairnessPolicyFactory)
