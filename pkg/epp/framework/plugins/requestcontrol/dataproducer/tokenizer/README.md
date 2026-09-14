@@ -31,7 +31,6 @@ Backend selection:
   certificates, configure `vllm.caCertPath` to trust the CA, and optionally
   `vllm.clientCertPath`/`vllm.clientKeyPath` for mTLS. Future protocol fields
   (e.g. `grpc`) can be added alongside `url` under the same `vllm` block.
-- **`udsTokenizerConfig`**: deprecated gRPC-over-UDS sidecar (see warning below).
 
 > [!WARNING]
 > The `estimate` backend approximates token boundaries (≈4 bytes/token); its
@@ -39,12 +38,6 @@ Backend selection:
 > requires real tokens — configure a `vllm` `token-producer` explicitly for it.
 > If omitted, the auto-created `estimate` producer satisfies the dependency but
 > silently degrades precise cache correlation.
-
-> [!WARNING]
-> The `udsTokenizerConfig` backend (gRPC-over-UDS sidecar) is **deprecated**
-> and will be removed in a future release. Existing configs continue to work
-> but emit a deprecation warning at startup. Migrate to `vllm.url`. See
-> [Migration](#migration-from-udstokenizerconfig) below.
 
 ## Config
 
@@ -109,21 +102,34 @@ continues; downstream scorers fall back to their own paths.
 
 The plugin calls `POST {http}/v1/completions/render` and
 `POST {http}/v1/chat/completions/render`, both of which are exposed by
-`vllm serve <model>` and by the GPU-less `vllm launch render <model>`.
+`vllm serve <model>`, the Python-based GPU-less `vllm launch render <model>`,
+and the standalone Rust renderer `vllm-rs render <model>`.
 Any reachable HTTP endpoint serving the same model the scheduler tokenizes
 for will work — sidecar in the EPP pod (loopback) or a dedicated Service
 shared by multiple EPP replicas. When the inbound request carries an
 `Authorization` header, it is forwarded verbatim on render requests, so an
-endpoint started with `--api-key` accepts them; the startup warmup probe
-sends no `Authorization` header, so against such an endpoint it is skipped
-and the first request pays the cold-start cost.
+endpoint started with `--api-key` accepts them; a bad token then fails at
+render, the same way it fails at inference.
+
+The startup warmup probe has no inbound request to borrow a credential
+from. When `VLLM_API_KEY` is set on the EPP container, the probe sends
+`Authorization: Bearer $VLLM_API_KEY`; the variable is warmup-only, and
+request paths keep forwarding the client's `Authorization` header.
 
 ```yaml
-# EPP pod spec
+# EPP pod spec (Python renderer)
 containers:
 - name: vllm-render
   image: vllm/vllm-openai:latest          # any image shipping `vllm launch render`
   command: ["vllm", "launch", "render"]
+  args: ["${MODEL_NAME}", "--port=8000"]
+  ports: [{name: render-http, containerPort: 8000}]
+  readinessProbe: {httpGet: {path: /health, port: 8000}, periodSeconds: 5}
+
+# EPP pod spec (Rust renderer, ~40x lighter image)
+- name: vllm-render
+  image: vllm/vllm-rs:latest              # image shipping `vllm-rs render`
+  command: ["vllm-rs", "render"]
   args: ["${MODEL_NAME}", "--port=8000"]
   ports: [{name: render-http, containerPort: 8000}]
   readinessProbe: {httpGet: {path: /health, port: 8000}, periodSeconds: 5}
@@ -174,37 +180,37 @@ containers:
     - "--ssl-keyfile=/path/to/tls.key"
 ```
 
+When the render endpoint requires a key — a `vllm launch render` endpoint
+or a `vllm serve` instance started with `--api-key` — start the render
+container with the key and expose it to the EPP container via
+`VLLM_API_KEY` so the warmup probe authenticates:
+
+```yaml
+# vllm-api-key is the same Secret the endpoint reads its --api-key from
+containers:
+- name: epp
+  env:
+  - name: VLLM_API_KEY
+    valueFrom:
+      secretKeyRef:
+        name: vllm-api-key
+        key: api-key
+- name: vllm-render
+  image: vllm/vllm-openai:latest
+  command: ["vllm", "launch", "render"]
+  args:
+    - "${MODEL_NAME}"
+    - "--port=8000"
+    - "--api-key=$(VLLM_API_KEY)"
+  env:
+  - name: VLLM_API_KEY
+    valueFrom:
+      secretKeyRef:
+        name: vllm-api-key
+        key: api-key
+```
+
 A complete sample config that pairs this with `precise-prefix-cache-producer` and `prefix-cache-scorer` is at [`deploy/config/sim-epp-tokenizer-vllm-http-config.yaml`](../../../../../../../deploy/config/sim-epp-tokenizer-vllm-http-config.yaml).
-
-## Migration from `udsTokenizerConfig`
-
-The legacy UDS backend ran a per-pod tokenizer sidecar and connected over a
-shared Unix domain socket. Replace it with the vLLM HTTP /render backend,
-which calls the same model-serving pods (or a co-located `vllm launch render`
-sidecar) and removes the dedicated tokenizer image.
-
-Before:
-
-```yaml
-- type: token-producer
-  parameters:
-    modelName: "${MODEL_NAME}"
-    udsTokenizerConfig:
-      socketFile: /tmp/tokenizer/tokenizer-uds.socket
-```
-
-After:
-
-```yaml
-- type: token-producer
-  parameters:
-    modelName: "${MODEL_NAME}"
-    vllm:
-      url: "http://localhost:8000"   # or a shared render Service
-```
-
-See the [Deployment](#deployment) section above for sidecar vs shared-Service
-options.
 
 ---
 
